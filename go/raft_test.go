@@ -199,10 +199,6 @@ func TestSubmitNonLeaderFails(t *testing.T) {
 	sleepMs(10)
 }
 
-type Federated struct {
-	Model string
-}
-
 func TestFederatedLearning(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
 
@@ -211,17 +207,26 @@ func TestFederatedLearning(t *testing.T) {
 
 	origLeaderId, _ := h.CheckSingleLeader()
 
-	values := []Federated{{Model: "model test"}}
-	for _, v := range values {
-		tlog("submitting %d to %d", v, origLeaderId)
-		// TODO: ここにMLモデルをぶちこんで共有すればよい？
-		isLeader := h.SubmitToServer(origLeaderId, v)
+	// TODO: prepare test models
+	models := []string{
+		"model1.hdf5",
+		"model2.hdf5",
+		"model3.hdf5",
+	}
+
+	for _, m := range models {
+		b, err := ReadModel(m)
+		if err != nil {
+			t.Errorf("want model=%v, but it's not", m)
+		}
+
+		tlog("submitting %d to %d", b, origLeaderId)
+		isLeader := h.SubmitToServer(origLeaderId, b)
 
 		if !isLeader {
 			t.Errorf("want id=%d leader, but it's not", origLeaderId)
 		}
 		sleepMs(100)
-
 	}
 }
 
