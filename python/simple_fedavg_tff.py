@@ -35,28 +35,27 @@ from simple_fedavg_tf import server_update
 from simple_fedavg_tf import ServerState
 
 
-def _initialize_optimizer_vars(model: tff.learning.Model,
-                               optimizer: tf.keras.optimizers.Optimizer):
+def _initialize_optimizer_vars(model, optimizer):
     """Creates optimizer variables to assign the optimizer's state."""
     # Create zero gradients to force an update that doesn't modify.
     # Force eagerly constructing the optimizer variables. Normally Keras lazily
     # creates the variables on first usage of the optimizer. Optimizers such as
     # Adam, Adagrad, or using momentum need to create a new set of variables shape
     # like the model weights.
-    model_weights = tff.learning.ModelWeights.from_model(model)
-    zero_gradient = [tf.zeros_like(t) for t in model_weights.trainable]
-    optimizer.apply_gradients(zip(zero_gradient, model_weights.trainable))
+    zero_gradient = [tf.zeros_like(t) for t in model.weights.trainable]
+    optimizer.apply_gradients(zip(zero_gradient, model.weights.trainable))
     assert optimizer.variables()
 
 
 def build_federated_averaging_process(
         model_fn,
         server_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=1.0),
-        client_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=0.02)):
+        client_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=0.1)):
     """Builds the TFF computations for optimization using federated averaging.
 
     Args:
-      model_fn: A no-arg function that returns a `tff.learning.Model`.
+      model_fn: A no-arg function that returns a
+        `simple_fedavg_tf.KerasModelWrapper`.
       server_optimizer_fn: A no-arg function that returns a
         `tf.keras.optimizers.Optimizer` for server update.
       client_optimizer_fn: A no-arg function that returns a
@@ -71,15 +70,15 @@ def build_federated_averaging_process(
     @tff.tf_computation
     def server_init_tf():
         model = model_fn()
-        model_weights = tff.learning.ModelWeights.from_model(model)
         server_optimizer = server_optimizer_fn()
         _initialize_optimizer_vars(model, server_optimizer)
         return ServerState(
-            model_weights=model_weights,
+            model_weights=model.weights,
             optimizer_state=server_optimizer.variables(),
             round_num=0)
 
     server_state_type = server_init_tf.type_signature.result
+
     model_weights_type = server_state_type.model_weights
 
     @tff.tf_computation(server_state_type, model_weights_type.trainable)
@@ -111,10 +110,9 @@ def build_federated_averaging_process(
         """Orchestration logic for one round of computation.
 
         Args:
-          server_state: A `ServerState` containing the state of the training process
-            up to the current round.
+          server_state: A `ServerState`.
           federated_dataset: A federated `tf.data.Dataset` with placement
-            `tff.CLIENTS` containing data to train the current round on.
+            `tff.CLIENTS`.
 
         Returns:
           A tuple of updated `ServerState` and `tf.Tensor` of average loss.
@@ -139,7 +137,7 @@ def build_federated_averaging_process(
     @tff.federated_computation
     def server_init_tff():
         """Orchestration logic for server model initialization."""
-        return tff.federated_eval(server_init_tf, tff.SERVER)
+        return tff.federated_value(server_init_tf(), tff.SERVER)
 
     return tff.templates.IterativeProcess(
         initialize_fn=server_init_tff, next_fn=run_one_round)

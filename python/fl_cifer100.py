@@ -6,7 +6,6 @@ import numpy as np
 import tensorflow as tf
 import tensorflow_federated as tff
 
-from cleverhans.utils_keras import KerasModelWrapper
 
 import random
 import sys
@@ -17,7 +16,7 @@ import os
 np.set_printoptions(precision=None, suppress=None)
 
 # Training hyperparameters
-flags.DEFINE_integer('total_rounds', 50, 'Number of total training rounds.')
+flags.DEFINE_integer('total_rounds', 1000, 'Number of total training rounds.')
 flags.DEFINE_integer('rounds_per_eval', 1, 'How often to evaluate')
 flags.DEFINE_integer('train_clients_per_round', 1,
                      'How many clients to sample per round.')
@@ -79,7 +78,7 @@ def main(argv):
     client_devices = tf.config.list_logical_devices('GPU')
     print(client_devices)
     server_device = tf.config.list_logical_devices('CPU')[0]
-    tff.backends.native.set_local_python_execution_context(
+    tff.backends.native.set_local_execution_context(
         server_tf_device=server_device, client_tf_devices=client_devices)
 
     train_data, test_data = get_cifar100_dataset()
