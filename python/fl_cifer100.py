@@ -1,91 +1,121 @@
 import collections
-
+import functools
+from absl import app
+from absl import flags
 import numpy as np
 import tensorflow as tf
 import tensorflow_federated as tff
-from matplotlib import pyplot as plt
 
-NUM_CLIENTS = 10
-NUM_EPOCHS = 5
-BATCH_SIZE = 20
-SHUFFLE_BUFFER = 100
-PREFETCH_BUFFER = 10
+from cleverhans.utils_keras import KerasModelWrapper
+
+import random
+import sys
+import simple_fedavg_tf
+import simple_fedavg_tff
+import os
+
+np.set_printoptions(precision=None, suppress=None)
+
+# Training hyperparameters
+flags.DEFINE_integer('total_rounds', 50, 'Number of total training rounds.')
+flags.DEFINE_integer('rounds_per_eval', 1, 'How often to evaluate')
+flags.DEFINE_integer('train_clients_per_round', 1,
+                     'How many clients to sample per round.')
+flags.DEFINE_integer('client_epochs_per_round', 1,
+                     'Number of epochs in the client to take per round.')
+flags.DEFINE_integer('batch_size', 16, 'Batch size used on the client.')
+flags.DEFINE_integer('test_batch_size', 128, 'Minibatch size of test data.')
+
+# Optimizer configuration (this defines one or more flags per optimizer).
+flags.DEFINE_float('server_learning_rate', 0.0005, 'Server learning rate.')
+flags.DEFINE_float('client_learning_rate', 0.0005, 'Client learning rate.')
+
+FLAGS = flags.FLAGS
 
 
-def preprocess(dataset):
+def create_vgg19_model():
+    model = tf.keras.applications.VGG19(include_top=True,
+                                        weights=None,
+                                        input_shape=(32, 32, 3),
+                                        classes=100)
+    return model
 
-    def batch_format_fn(element):
-        """Flatten a batch `pixels` and return the features as an `OrderedDict`."""
+
+def get_cifar100_dataset():
+    cifar100_train, cifar100_test = tff.simulation.datasets.cifar100.load_data()
+
+    def element_fn(element):
         return collections.OrderedDict(
-            x=tf.reshape(element['pixels'], [-1, 784]),
-            y=tf.reshape(element['label'], [-1, 1]))
+            x=tf.expand_dims(element['image'], -1), y=element['label'])
 
-    return dataset.repeat(NUM_EPOCHS).shuffle(SHUFFLE_BUFFER, seed=1).batch(
-        BATCH_SIZE).map(batch_format_fn).prefetch(PREFETCH_BUFFER)
+    def preprocess_train_dataset(dataset):
+        # Use buffer_size same as the maximum client dataset size,
+        # 418 for Federated EMNIST
+        return dataset.map(element_fn).shuffle(buffer_size=418).repeat(
+            count=FLAGS.client_epochs_per_round)  # .batch(
+        # FLAGS.batch_size, drop_remainder=False)
 
+    def preprocess_test_dataset(dataset):
+        return dataset.map(element_fn).batch(
+            FLAGS.test_batch_size, drop_remainder=False)
 
-# TODO: cifar100使う
-emnist_train, emnist_test = tff.simulation.datasets.emnist.load_data()
-#emnist_train, emnist_test = tff.simulation.datasets.cifar100.load_data()
-sample_clients = emnist_train.client_ids[0:NUM_CLIENTS]
-
-example_dataset = emnist_train.create_tf_dataset_for_client(
-    emnist_train.client_ids[0])
-print(example_dataset)
-preprocessed_example_dataset = preprocess(example_dataset)
-
-
-def make_federated_data(client_data, client_ids) -> [tf.data.Dataset]:
-    return [
-        preprocess(client_data.create_tf_dataset_for_client(x))
-        for x in client_ids
-    ]
+    cifar100_train = cifar100_train.preprocess(preprocess_train_dataset)
+    cifar100_test = preprocess_test_dataset(
+        cifar100_test.create_tf_dataset_from_all_clients())
+    return cifar100_train, cifar100_test
 
 
-def create_keras_model():
-    return tf.keras.models.Sequential([
-        tf.keras.layers.InputLayer(input_shape=(784,)),
-        tf.keras.layers.Dense(10, kernel_initializer='zeros'),
-        tf.keras.layers.Softmax()
-    ])
+def server_optimizer_fn():
+    return tf.keras.optimizers.SGD(learning_rate=FLAGS.server_learning_rate)
 
 
-def model_fn():
-    # We _must_ create a new model here, and _not_ capture it from an external
-    # scope. TFF will call this within different graph contexts.
-    keras_model = create_keras_model()
-    return tff.learning.from_keras_model(
-        keras_model,
-        input_spec=preprocessed_example_dataset.element_spec,
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
-        metrics=[tf.keras.metrics.SparseCategoricalAccuracy()])
+def client_optimizer_fn():
+    return tf.keras.optimizers.Adam(learning_rate=FLAGS.client_learning_rate)
 
 
-federated_train_data = make_federated_data(emnist_train, sample_clients)
+def main(argv):
+    if len(argv) > 1:
+        raise app.UsageError('Too many command-line arguments.')
+    client_devices = tf.config.list_logical_devices('GPU')
+    print(client_devices)
+    server_device = tf.config.list_logical_devices('CPU')[0]
+    tff.backends.native.set_local_python_execution_context(
+        server_tf_device=server_device, client_tf_devices=client_devices)
 
-print('Number of client datasets: {l}'.format(l=len(federated_train_data)))
-print('First dataset: {d}'.format(d=federated_train_data[0]))
+    train_data, test_data = get_cifar100_dataset()
 
-iterative_process = tff.learning.build_federated_averaging_process(
-    model_fn,
-    client_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=0.02),
-    server_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=1.0))
+    def tff_model_fn():
+        """Constructs a fully initialized model for use in federated averaging."""
+        # keras_model = create_original_fedavg_cnn_model(only_digits=False)
+        keras_model = create_vgg19_model()
+        # keras_model.summary()
+        loss = tf.keras.losses.SparseCategoricalCrossentropy()
+        return simple_fedavg_tf.KerasModelWrapper(keras_model,
+                                                  test_data.element_spec, loss)
 
-# @test {"skip": true}
-logdir = "/tmp/logs/scalars/training/"
-summary_writer = tf.summary.create_file_writer(logdir)
-# 中央のサーバ状態を作成
-state = iterative_process.initialize()
+    iterative_process = simple_fedavg_tff.build_federated_averaging_process(
+        tff_model_fn, server_optimizer_fn, client_optimizer_fn)
+    server_state = iterative_process.initialize()
 
-# 10 Roundで学習する
-NUM_ROUNDS = 20
-for round_num in range(NUM_ROUNDS):
-    state, metrics = iterative_process.next(state, federated_train_data)
-    print('round {:2d}, metrics={}'.format(round_num + 1, metrics))
+    metric = tf.keras.metrics.SparseCategoricalAccuracy(name='test_accuracy')
+    model = tff_model_fn()
 
-    # @test {"skip": true}
-# with summary_writer.as_default():
-#    for round_num in range(1, NUM_ROUNDS):
-#        state, metrics = iterative_process.next(state, federated_train_data)
-#        for name, value in metrics['train'].items():
-#            tf.summary.scalar(name, value, step=round_num)
+    for round_num in range(FLAGS.total_rounds):
+        sampled_clients = np.random.choice(
+            train_data.client_ids,  size=FLAGS.train_clients_per_round,   replace=False)
+        sampled_train_data = [train_data.create_tf_dataset_for_client(client).batch(FLAGS.batch_size, drop_remainder=False)
+                              for client in sampled_clients
+                              ]
+
+        server_state, train_metrics = iterative_process.next(
+            server_state, sampled_train_data)
+
+        print(f'Round {round_num} training loss: {train_metrics}')
+        if round_num % FLAGS.rounds_per_eval == 0:
+            model.from_weights(server_state.model_weights)
+            accuracy = simple_fedavg_tf.keras_evaluate(model.keras_model, test_data,
+                                                       metric)
+
+
+if __name__ == '__main__':
+    app.run(main)

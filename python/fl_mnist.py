@@ -24,9 +24,7 @@ def preprocess(dataset):
         BATCH_SIZE).map(batch_format_fn).prefetch(PREFETCH_BUFFER)
 
 
-# TODO: cifar100使う
 emnist_train, emnist_test = tff.simulation.datasets.emnist.load_data()
-#emnist_train, emnist_test = tff.simulation.datasets.cifar100.load_data()
 sample_clients = emnist_train.client_ids[0:NUM_CLIENTS]
 
 example_dataset = emnist_train.create_tf_dataset_for_client(
