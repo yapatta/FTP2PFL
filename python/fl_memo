@@ -1,0 +1,13 @@
+emnist_train, emnist_test = tff.simulation.datasets.emnist.load_data() // 訓練データ, テストデータ
+example_dataset = emnist_train.create_tf_dataset_for_client(emnist_train.client_ids[0]) // id_1のクライアントのデータセット
+// example_datasetが数字データが取得できる
+// example_elementが画像のデータ
+
+for example in example_dataset.take(40):
+  plt.subplot(4, 10, j+1)
+  plt.imshow(example['pixels'].numpy(), cmap='gray', aspect='equal')
+  plt.axis('off')
+  j += 1
+
+// 40個の画像を表示
+
