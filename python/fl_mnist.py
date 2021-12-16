@@ -1,4 +1,5 @@
 import collections
+import socket
 
 import numpy as np
 import tensorflow as tf
@@ -79,6 +80,22 @@ state = iterative_process.initialize()
 NUM_ROUNDS = 20
 for round_num in range(NUM_ROUNDS):
     state, metrics = iterative_process.next(state, federated_train_data)
+    weights = state.model.trainable[1]
+    # バイナリ化した重み
+    bweights = weights.tobytes()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # RAFTサーバ8888ポートとりあえず開く
+    raft = (socket.gethostname(), 8888)
+    sock.sendto(weights,  raft)
+    print("waiting response from server")
+    rx_message, addr = sock.recvfrom(1024)
+    print("f[server]: {}".format(rx_message.decode(encoding='utf-8')))
+
+    sock.close()
+
+    # バイナリ化した重みを復元 -> len10のndarray
+    # np.frombuffer(weights, dtype=np.dtype('float32'), count=-1, offset=0)
+
     print('round {:2d}, metrics={}'.format(round_num + 1, metrics))
 
     # @test {"skip": true}
