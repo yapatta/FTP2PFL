@@ -11,6 +11,8 @@ NUM_EPOCHS = 5
 BATCH_SIZE = 20
 SHUFFLE_BUFFER = 100
 PREFETCH_BUFFER = 10
+M_SIZE = 3136
+LM_SIZE = 40
 
 
 def preprocess(dataset):
@@ -60,47 +62,66 @@ def model_fn():
         metrics=[tf.keras.metrics.SparseCategoricalAccuracy()])
 
 
-federated_train_data = make_federated_data(emnist_train, sample_clients)
+def main():
+    federated_train_data = make_federated_data(emnist_train, sample_clients)
 
-print('Number of client datasets: {l}'.format(l=len(federated_train_data)))
-print('First dataset: {d}'.format(d=federated_train_data[0]))
+    print('Number of client datasets: {l}'.format(l=len(federated_train_data)))
+    print('First dataset: {d}'.format(d=federated_train_data[0]))
 
-iterative_process = tff.learning.build_federated_averaging_process(
-    model_fn,
-    client_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=0.02),
-    server_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=1.0))
+    iterative_process = tff.learning.build_federated_averaging_process(
+        model_fn,
+        client_optimizer_fn=lambda: tf.keras.optimizers.SGD(
+            learning_rate=0.02),
+        server_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=1.0))
 
-# @test {"skip": true}
-logdir = "/tmp/logs/scalars/training/"
-summary_writer = tf.summary.create_file_writer(logdir)
-# 中央のサーバ状態を作成
-state = iterative_process.initialize()
+    # @test {"skip": true}
+    logdir = "/tmp/logs/scalars/training/"
+    summary_writer = tf.summary.create_file_writer(logdir)
+    # 中央のサーバ状態を作成
+    state = iterative_process.initialize()
 
-# 10 Roundで学習する
-NUM_ROUNDS = 20
-for round_num in range(NUM_ROUNDS):
-    state, metrics = iterative_process.next(state, federated_train_data)
-    weights = state.model.trainable[1]
-    # バイナリ化した重み
-    bweights = weights.tobytes()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     # RAFTサーバ8888ポートとりあえず開く
-    raft = (socket.gethostname(), 8888)
-    sock.sendto(weights,  raft)
-    print("waiting response from server")
-    rx_message, addr = sock.recvfrom(1024)
-    print("f[server]: {}".format(rx_message.decode(encoding='utf-8')))
+    sock.connect((socket.gethostname(), 8888))
 
-    sock.close()
+    # 10 Roundで学習する
+    NUM_ROUNDS = 20
+    for round_num in range(NUM_ROUNDS):
+        state, metrics = iterative_process.next(state, federated_train_data)
+        # (784, 10) -> (10, 784)
+        weights = state.model.trainable[0]
 
+        # TODO: range(10)に
+        for i in range(1):
+            # バイナリ化した重み
+            bweights = weights.tobytes()
+            # 4bytes  4 * 784 * 10= 31360
+            print("bweights: {}".format(len(bweights)))
+            # 最後だけ, (10, 1) -> (1, 10)
+            last_weight = state.model.trainable[1]
+            # print("weight:  {}".format(weights[0].shape))
+            lastb_weight = last_weight.tobytes()
+
+            weights_all = bweights + lastb_weight
+            sock.sendall(weights_all)
+
+        # sock.sendall(lastb_weight)
+        #print("waiting response from server")
+        rx_message = sock.recv(3)
+        print("f[server]: {}".format(rx_message.decode(encoding='utf-8')))
+
+        print('round {:2d}, metrics={}'.format(round_num + 1, metrics))
     # バイナリ化した重みを復元 -> len10のndarray
     # np.frombuffer(weights, dtype=np.dtype('float32'), count=-1, offset=0)
 
-    print('round {:2d}, metrics={}'.format(round_num + 1, metrics))
-
+    sock.close()
     # @test {"skip": true}
 # with summary_writer.as_default():
 #    for round_num in range(1, NUM_ROUNDS):
 #        state, metrics = iterative_process.next(state, federated_train_data)
 #        for name, value in metrics['train'].items():
 #            tf.summary.scalar(name, value, step=round_num)
+
+
+if __name__ == '__main__':
+    main()

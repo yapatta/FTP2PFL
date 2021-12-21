@@ -205,29 +205,12 @@ func TestFederatedLearning(t *testing.T) {
 	h := NewHarness(t, 3)
 	defer h.Shutdown()
 
-	origLeaderId, _ := h.CheckSingleLeader()
-
-	// TODO: prepare test models
-	models := []string{
-		"model1.hdf5",
-		"model2.hdf5",
-		"model3.hdf5",
-	}
-
-	for _, m := range models {
-		b, err := ReadModel(m)
-		if err != nil {
-			t.Errorf("want model=%v, but it's not", m)
-		}
-
-		tlog("submitting %d to %d", b, origLeaderId)
-		isLeader := h.SubmitToServer(origLeaderId, b)
-
-		if !isLeader {
-			t.Errorf("want id=%d leader, but it's not", origLeaderId)
-		}
-		sleepMs(100)
-	}
+	sleepMs(40_000)
+	//cmd := exec.Command("sh", "-c", "../venv/bin/python ../python/fl_mnist.py 1>&2")
+	//tlog("%v", cmd)
+	// cmd := exec.Command("../venv/bin/python", "../python/fl_mnist.py")
+	//ps, err := cmd.CombinedOutput()
+	//tlog("ps: %v, err: %v", ps, err)
 }
 
 func TestCommitMultipleCommands(t *testing.T) {

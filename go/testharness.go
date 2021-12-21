@@ -6,12 +6,17 @@ package raft
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
+	"net"
 	"sync"
 	"testing"
 	"time"
 )
+
+const ModelSize = 784 * 4
+const LastModelSize = 10 * 4
 
 func init() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
@@ -27,6 +32,8 @@ type Harness struct {
 	cluster []*Server
 	storage []*MapStorage
 
+	listner   *net.TCPListener
+	sockClose chan interface{}
 	// commitChans has a channel per server in cluster with the commit channel for
 	// that server.
 	commitChans []chan CommitEntry
@@ -50,6 +57,20 @@ type Harness struct {
 	t *testing.T
 }
 
+func NewTCPSocket() (*net.TCPListener, error) {
+	tcpAddr, err := net.ResolveTCPAddr("tcp", ":8888")
+	if err != nil {
+		return nil, err
+	}
+
+	listener, err := net.ListenTCP("tcp", tcpAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	return listener, nil
+}
+
 // NewHarness creates a new test Harness, initialized with n servers connected
 // to each other.
 func NewHarness(t *testing.T, n int) *Harness {
@@ -61,6 +82,12 @@ func NewHarness(t *testing.T, n int) *Harness {
 	ready := make(chan interface{})
 	storage := make([]*MapStorage, n)
 
+	// socket
+	sockClose := make(chan interface{})
+	listener, err := NewTCPSocket()
+	if err != nil {
+		log.Fatalln(err)
+	}
 	// Create all Servers in this cluster, assign ids and peer ids.
 	for i := 0; i < n; i++ {
 		peerIds := make([]int, 0)
@@ -95,10 +122,15 @@ func NewHarness(t *testing.T, n int) *Harness {
 		commitChans: commitChans,
 		commits:     commits,
 		connected:   connected,
+		sockClose:   sockClose,
+		listner:     listener,
 		alive:       alive,
 		n:           n,
 		t:           t,
 	}
+
+	// モデルを受け取る
+	go h.ReceiveModel()
 
 	for i := 0; i < n; i++ {
 		go h.collectCommits(i)
@@ -121,6 +153,66 @@ func (h *Harness) Shutdown() {
 	}
 	for i := 0; i < h.n; i++ {
 		close(h.commitChans[i])
+	}
+	close(h.sockClose)
+	h.listner.Close()
+}
+
+func (h *Harness) ReceiveModel() {
+	tlog("Model receiver starts")
+	conn, _ := h.listner.AcceptTCP()
+
+	for {
+		select {
+		case <-h.sockClose:
+			return
+		default:
+			h.HandleTCPConnection(conn)
+		}
+	}
+}
+
+func (h *Harness) HandleTCPConnection(conn *net.TCPConn) {
+	buf := make([]byte, ModelSize*10+LastModelSize)
+	// 784 * 10個のモデル
+	// TODO: i < 10に
+	for i := 0; i < 1; i++ {
+		tlog("upload phase: %v", i)
+		n, err := conn.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				return
+			}
+			log.Fatalln(err)
+		}
+
+		if n != ModelSize*10+LastModelSize {
+			log.Fatalf("model size is not correct(3136): %v", n)
+		}
+
+		origLeaderId, _ := h.CheckSingleLeader()
+		h.SubmitToServer(origLeaderId, buf)
+	}
+
+	/*
+		last_buf := make([]byte, 10*4)
+		// MEMO: EOFだとerrになって落ちる対策
+		n, err := conn.Read(last_buf)
+		if err != nil {
+			if err == io.EOF {
+				return
+			}
+			log.Fatalln(err)
+		}
+		if n != LastModelSize {
+			log.Fatalf("model size is not correct(40): %v", n)
+		}
+
+		origLeaderId, _ := h.CheckSingleLeader()
+		h.SubmitToServer(origLeaderId, last_buf)
+	*/
+	if _, err := conn.Write([]byte("end")); err != nil {
+		log.Fatalln(err)
 	}
 }
 
