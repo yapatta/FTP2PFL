@@ -91,31 +91,28 @@ def main():
         # (784, 10) -> (10, 784)
         weights = state.model.trainable[0]
 
-        # TODO: range(10)に
-        for i in range(1):
-            # バイナリ化した重み
-            bweights = weights.tobytes()
-            # 4bytes  4 * 784 * 10= 31360
-            print("bweights: {}".format(len(bweights)))
-            # 最後だけ, (10, 1) -> (1, 10)
-            last_weight = state.model.trainable[1]
-            # print("weight:  {}".format(weights[0].shape))
-            lastb_weight = last_weight.tobytes()
+        # バイナリ化した重み
+        bweights = weights.tobytes()
+        # 4bytes  4 * 784 * 10= 31360
+        print("upload: {}".format(round_num))
+        # 最後だけ, (10, 1) -> (1, 10)
+        last_weight = state.model.trainable[1]
+        # print("weight:  {}".format(weights[0].shape))
+        lastb_weight = last_weight.tobytes()
 
-            weights_all = bweights + lastb_weight
-            sock.sendall(weights_all)
+        weights_all = bweights + lastb_weight
+        sock.sendall(weights_all)
+        print('round {:2d}, metrics={}'.format(round_num + 1, metrics))
 
         # sock.sendall(lastb_weight)
-        #print("waiting response from server")
-        rx_message = sock.recv(3)
-        print("f[server]: {}".format(rx_message.decode(encoding='utf-8')))
-
-        print('round {:2d}, metrics={}'.format(round_num + 1, metrics))
-    # バイナリ化した重みを復元 -> len10のndarray
-    # np.frombuffer(weights, dtype=np.dtype('float32'), count=-1, offset=0)
+        # print("waiting response from server")
+    # rx_message = sock.recv(3)
+    #print("f[server]: {}".format(rx_message.decode(encoding='utf-8')))
 
     sock.close()
-    # @test {"skip": true}
+    # バイナリ化した重みを復元 -> len10のndarray
+    # np.frombuffer(weights, dtype=np.dtype('float32'), count=-1, offset=0)
+# @test {"skip": true}
 # with summary_writer.as_default():
 #    for round_num in range(1, NUM_ROUNDS):
 #        state, metrics = iterative_process.next(state, federated_train_data)

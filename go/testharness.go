@@ -32,7 +32,7 @@ type Harness struct {
 	cluster []*Server
 	storage []*MapStorage
 
-	listner   *net.TCPListener
+	listener  *net.TCPListener
 	sockClose chan interface{}
 	// commitChans has a channel per server in cluster with the commit channel for
 	// that server.
@@ -123,7 +123,7 @@ func NewHarness(t *testing.T, n int) *Harness {
 		commits:     commits,
 		connected:   connected,
 		sockClose:   sockClose,
-		listner:     listener,
+		listener:    listener,
 		alive:       alive,
 		n:           n,
 		t:           t,
@@ -155,33 +155,46 @@ func (h *Harness) Shutdown() {
 		close(h.commitChans[i])
 	}
 	close(h.sockClose)
-	h.listner.Close()
+	h.listener.Close()
 }
 
 func (h *Harness) ReceiveModel() {
-	tlog("Model receiver starts")
-	conn, _ := h.listner.AcceptTCP()
-
 	for {
-		select {
-		case <-h.sockClose:
-			return
-		default:
-			h.HandleTCPConnection(conn)
+		conn, err := h.listener.AcceptTCP()
+
+		tlog("Model receiver starts")
+
+		if err != nil {
+			select {
+			case <-h.sockClose:
+				return
+			default:
+				log.Fatalln(err)
+			}
 		}
+
+		go h.HandleTCPConnection(conn)
 	}
 }
 
 func (h *Harness) HandleTCPConnection(conn *net.TCPConn) {
+	defer conn.Close()
 	buf := make([]byte, ModelSize*10+LastModelSize)
 	// 784 * 10個のモデル
-	// TODO: i < 10に
-	for i := 0; i < 1; i++ {
-		tlog("upload phase: %v", i)
+	// TODO: i < 20に
+	for {
+		tlog("model uploading...")
 		n, err := conn.Read(buf)
 		if err != nil {
 			if err == io.EOF {
-				return
+				continue
+			}
+
+			if ne, ok := err.(net.Error); ok {
+				switch {
+				case ne.Temporary():
+					continue
+				}
 			}
 			log.Fatalln(err)
 		}
@@ -193,27 +206,9 @@ func (h *Harness) HandleTCPConnection(conn *net.TCPConn) {
 		origLeaderId, _ := h.CheckSingleLeader()
 		h.SubmitToServer(origLeaderId, buf)
 	}
-
-	/*
-		last_buf := make([]byte, 10*4)
-		// MEMO: EOFだとerrになって落ちる対策
-		n, err := conn.Read(last_buf)
-		if err != nil {
-			if err == io.EOF {
-				return
-			}
-			log.Fatalln(err)
-		}
-		if n != LastModelSize {
-			log.Fatalf("model size is not correct(40): %v", n)
-		}
-
-		origLeaderId, _ := h.CheckSingleLeader()
-		h.SubmitToServer(origLeaderId, last_buf)
-	*/
-	if _, err := conn.Write([]byte("end")); err != nil {
-		log.Fatalln(err)
-	}
+	//if _, err := conn.Write([]byte("end")); err != nil {
+	//	log.Fatalln(err)
+	//}
 }
 
 // DisconnectPeer disconnects a server from all other servers in the cluster.
