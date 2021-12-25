@@ -1,5 +1,14 @@
 import collections
 import socket
+import requests
+from requests.exceptions import Timeout
+from http.client import RemoteDisconnected
+from urllib3.util import Retry
+from requests.adapters import HTTPAdapter
+
+import json
+import base64
+import sys
 
 import numpy as np
 import tensorflow as tf
@@ -80,10 +89,6 @@ def main():
     # 中央のサーバ状態を作成
     state = iterative_process.initialize()
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # RAFTサーバ8888ポートとりあえず開く
-    sock.connect((socket.gethostname(), 8888))
-
     # 10 Roundで学習する
     NUM_ROUNDS = 20
     for round_num in range(NUM_ROUNDS):
@@ -91,30 +96,36 @@ def main():
         # (784, 10) -> (10, 784)
         weights = state.model.trainable[0]
 
-        # TODO: range(10)に
-        for i in range(1):
-            # バイナリ化した重み
-            bweights = weights.tobytes()
-            # 4bytes  4 * 784 * 10= 31360
-            print("bweights: {}".format(len(bweights)))
-            # 最後だけ, (10, 1) -> (1, 10)
-            last_weight = state.model.trainable[1]
-            # print("weight:  {}".format(weights[0].shape))
-            lastb_weight = last_weight.tobytes()
+        # バイナリ化した重み
+        bweights = weights.tobytes()
+        # 4bytes  4 * 784 * 10= 31360
+        # print("bweights: {}".format(len(bweights)))
+        # 最後だけ, (10, 1) -> (1, 10)
+        last_weight = state.model.trainable[1]
+        # print("weight:  {}".format(weights[0].shape))
+        lastb_weight = last_weight.tobytes()
 
-            weights_all = bweights + lastb_weight
-            sock.sendall(weights_all)
+        weights_all = bweights + lastb_weight
 
-        # sock.sendall(lastb_weight)
-        #print("waiting response from server")
-        rx_message = sock.recv(3)
-        print("f[server]: {}".format(rx_message.decode(encoding='utf-8')))
+        session = requests.Session()
+        retries = Retry(total=5,  # リトライ回数
+                        backoff_factor=1,  # sleep時間
+                        status_forcelist=[500, 502, 503, 504])
+        session.mount("http://", HTTPAdapter(max_retries=retries))
+
+        headers = {'Content-type': "application/json"}
+        payload = {'model': base64.b64encode(weights_all).decode('utf-8')}
+        try:
+            r = session.post('http://localhost:8888/upload',
+                             data=json.dumps(payload), headers=headers, stream=True, timeout=(10.0, 30.0))
+            print(r)
+        except requests.exceptions.ConnectionError:
+            sys.exit()
 
         print('round {:2d}, metrics={}'.format(round_num + 1, metrics))
     # バイナリ化した重みを復元 -> len10のndarray
     # np.frombuffer(weights, dtype=np.dtype('float32'), count=-1, offset=0)
 
-    sock.close()
     # @test {"skip": true}
 # with summary_writer.as_default():
 #    for round_num in range(1, NUM_ROUNDS):

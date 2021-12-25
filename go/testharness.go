@@ -119,7 +119,10 @@ func NewHarness(t *testing.T, n int) *Harness {
 		t:           t,
 	}
 
-	srv := &http.Server{Handler: h.NewHandler(), Addr: ":8888"}
+	srv := &http.Server{
+		Handler: h.NewHandler(),
+		Addr:    ":8888",
+	}
 	h.srv = srv
 
 	go func() {
@@ -166,10 +169,11 @@ func (h *Harness) HTTPUploadModel(w http.ResponseWriter, r *http.Request) {
 
 		origLeaderId, _ := h.CheckSingleLeader()
 		if !h.SubmitToServer(origLeaderId, u.Model) {
-			msg := "submit in cluster failed"
+			msg := fmt.Sprintf("want id=%d leader, but it's not", origLeaderId)
 			http.Error(w, msg, http.StatusInternalServerError)
 			return
 		}
+		// sleepMs(400)
 
 		w.WriteHeader(http.StatusOK)
 	default:
@@ -433,7 +437,7 @@ func (h *Harness) collectCommits(i int) {
 	// 受け取ったchannelをずっと
 	for c := range h.commitChans[i] {
 		h.mu.Lock()
-		tlog("collectCommits(%d) got %+v", i, c)
+		// tlog("collectCommits(%d) got %+v", i, c)
 		h.commits[i] = append(h.commits[i], c)
 		h.mu.Unlock()
 	}

@@ -164,7 +164,7 @@ func (cm *ConsensusModule) Submit(command interface{}) bool {
 	if cm.state == Leader {
 		cm.log = append(cm.log, LogEntry{Command: command, Term: cm.currentTerm})
 		cm.persistToStorage()
-		cm.dlog("... log=%v", cm.log)
+		// cm.dlog("... log=%v", cm.log)
 		cm.mu.Unlock()
 		cm.triggerAEChan <- struct{}{}
 		return true
@@ -321,7 +321,7 @@ func (cm *ConsensusModule) AppendEntries(args AppendEntriesArgs, reply *AppendEn
 	if cm.state == Dead {
 		return nil
 	}
-	cm.dlog("AppendEntries: %+v", args)
+	// cm.dlog("AppendEntries: %+v", args)
 
 	// 現在のタームが古いことがわかった場合フォロワーになる
 	if args.Term > cm.currentTerm {
@@ -366,9 +366,9 @@ func (cm *ConsensusModule) AppendEntries(args AppendEntriesArgs, reply *AppendEn
 			// - newEntriesIndex points at the end of Entries, or an index where the
 			//   term mismatches with the corresponding log entry
 			if newEntriesIndex < len(args.Entries) {
-				cm.dlog("... inserting entries %v from index %d", args.Entries[newEntriesIndex:], logInsertIndex)
+				// cm.dlog("... inserting entries %v from index %d", args.Entries[newEntriesIndex:], logInsertIndex)
 				cm.log = append(cm.log[:logInsertIndex], args.Entries[newEntriesIndex:]...)
-				cm.dlog("... log is now: %v", cm.log)
+				// cm.dlog("... log is now: %v",  cm.log)
 			}
 
 			// Set commit index.
@@ -474,7 +474,7 @@ func (cm *ConsensusModule) startElection() {
 	savedCurrentTerm := cm.currentTerm
 	cm.electionResetEvent = time.Now()
 	cm.votedFor = cm.id
-	cm.dlog("becomes Candidate (currentTerm=%d); log=%v", savedCurrentTerm, cm.log)
+	// cm.dlog("becomes Candidate (currentTerm=%d); log=%v", savedCurrentTerm, cm.log)
 
 	var votesReceived int32 = 1
 
@@ -530,7 +530,7 @@ func (cm *ConsensusModule) startElection() {
 // becomeFollower makes cm a follower and resets its state.
 // Expects cm.mu to be locked.
 func (cm *ConsensusModule) becomeFollower(term int) {
-	cm.dlog("becomes Follower with term=%d; log=%v", term, cm.log)
+	// cm.dlog("becomes Follower with term=%d; log=%v", term, cm.log)
 	cm.state = Follower
 	cm.currentTerm = term
 	cm.votedFor = -1
@@ -548,7 +548,7 @@ func (cm *ConsensusModule) startLeader() {
 		cm.nextIndex[peerId] = len(cm.log)
 		cm.matchIndex[peerId] = -1
 	}
-	cm.dlog("becomes Leader; term=%d, nextIndex=%v, matchIndex=%v; log=%v", cm.currentTerm, cm.nextIndex, cm.matchIndex, cm.log)
+	// cm.dlog("becomes Leader; term=%d, nextIndex=%v, matchIndex=%v; log=%v", cm.currentTerm, cm.nextIndex, cm.matchIndex, cm.log)
 
 	// This goroutine runs in the background and sends AEs to peers:
 	// * Whenever something is sent on triggerAEChan
@@ -622,7 +622,7 @@ func (cm *ConsensusModule) leaderSendAEs() {
 				LeaderCommit: cm.commitIndex,
 			}
 			cm.mu.Unlock()
-			cm.dlog("sending AppendEntries to %v: ni=%d, args=%+v", peerId, ni, args)
+			// cm.dlog("sending AppendEntries to %v: ni=%d, args=%+v", peerId, ni, args)
 			var reply AppendEntriesReply
 			if err := cm.server.Call(peerId, "ConsensusModule.AppendEntries", args, &reply); err == nil {
 				cm.mu.Lock()
@@ -723,7 +723,7 @@ func (cm *ConsensusModule) commitChanSender() {
 			cm.lastApplied = cm.commitIndex
 		}
 		cm.mu.Unlock()
-		cm.dlog("commitChanSender entries=%v, savedLastApplied=%d", entries, savedLastApplied)
+		// cm.dlog("commitChanSender entries=%v, savedLastApplied=%d", entries, savedLastApplied)
 
 		for i, entry := range entries {
 			cm.commitChan <- CommitEntry{
