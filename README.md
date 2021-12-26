@@ -4,7 +4,7 @@ For research
 ## Test
 
 ```go
- go test -v -race -run TestFederatedLearning |& tee /tmp/raftlog
+$ go test -v -race -run TestFederatedLearning |& tee /tmp/raftlog
 ... logging output
 ... test should PASS
 $ go run ../tools/raft-testlog-viz/main.go < /tmp/raftlog
