@@ -9,6 +9,8 @@ from requests.adapters import HTTPAdapter
 import json
 import base64
 import sys
+import hashlib
+import time
 
 import numpy as np
 import tensorflow as tf
@@ -89,23 +91,21 @@ def main():
     # 中央のサーバ状態を作成
     state = iterative_process.initialize()
 
-    # 10 Roundで学習する
-    NUM_ROUNDS = 20
+    # N Roundで学習する
+    NUM_ROUNDS = 3
     for round_num in range(NUM_ROUNDS):
         state, metrics = iterative_process.next(state, federated_train_data)
-        # (784, 10) -> (10, 784)
-        weights = state.model.trainable[0]
+        # (784, 10)
+        fw_ori = state.model.trainable[0]
+        # 4bytes * 784 * 10= 31360
+        fwb_ori = fw_ori.tobytes()
 
-        # バイナリ化した重み
-        bweights = weights.tobytes()
-        # 4bytes  4 * 784 * 10= 31360
-        # print("bweights: {}".format(len(bweights)))
-        # 最後だけ, (10, 1) -> (1, 10)
-        last_weight = state.model.trainable[1]
+        #  最終層 (10, 1)
+        lw_ori = state.model.trainable[1]
         # print("weight:  {}".format(weights[0].shape))
-        lastb_weight = last_weight.tobytes()
+        lwb_ori = lw_ori.tobytes()
 
-        weights_all = bweights + lastb_weight
+        wb_all_ori = fwb_ori + lwb_ori
 
         session = requests.Session()
         retries = Retry(total=5,  # リトライ回数
@@ -113,12 +113,35 @@ def main():
                         status_forcelist=[500, 502, 503, 504])
         session.mount("http://", HTTPAdapter(max_retries=retries))
 
-        headers = {'Content-type': "application/json"}
-        payload = {'model': base64.b64encode(weights_all).decode('utf-8')}
         try:
+            headers = {'Content-type': "application/json"}
+            payload = {'model': base64.b64encode(wb_all_ori).decode('utf-8')}
             r = session.post('http://localhost:8888/upload',
                              data=json.dumps(payload), headers=headers, stream=True, timeout=(10.0, 30.0))
             print(r)
+            # MEMO: Commitされる時間待つ
+            time.sleep(10)
+
+            # グローバルモデルを取り出す
+            r = session.get("http://localhost:8888/download")
+            res_data = r.json()
+            wb_all = base64.b64decode((res_data['model'].encode()))
+
+            # アップロードしたモデルとダウンロードしたモデル同じ
+            assert hashlib.sha256(wb_all).hexdigest(
+            ), hashlib.sha256(wb_all_ori).hexdigest()
+
+            fw = np.frombuffer(wb_all[:31360], dtype=np.dtype(
+                'float32'), count=-1, offset=0).reshape(784, 10)
+            lw = np.frombuffer(wb_all[-40:], dtype=np.dtype(
+                'float32'), count=-1, offset=0).reshape(10)
+
+            print(np.array_equal(fw_ori, fw), np.array_equal(lw_ori, lw))
+
+            # 保存された全体モデルを元に修正
+            state.model.trainable[0] = fw
+            state.model.trainable[1] = lw
+
         except requests.exceptions.ConnectionError:
             sys.exit()
 
