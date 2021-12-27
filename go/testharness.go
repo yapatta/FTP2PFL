@@ -20,7 +20,7 @@ const ModelSize = 784 * 4
 const LastModelSize = 10 * 4
 
 type Upload struct {
-	Model []byte
+	Model []byte `json:"model"`
 }
 
 func init() {
@@ -186,11 +186,13 @@ func (h *Harness) HTTPUploadModel(w http.ResponseWriter, r *http.Request) {
 func (h *Harness) HTTPDownloadModel(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-
 		origLeaderId, _ := h.CheckSingleLeader()
+
+		h.mu.Lock()
 		lastCommitId := len(h.commits[origLeaderId]) - 1
 		lastCommit := h.commits[origLeaderId][lastCommitId]
 		m := []byte(fmt.Sprintf("%s", lastCommit.Command))
+		h.mu.Unlock()
 
 		u := &Upload{
 			Model: m,
