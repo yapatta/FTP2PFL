@@ -119,6 +119,7 @@ func NewHarness(t *testing.T, n int) *Harness {
 		t:           t,
 	}
 
+	// TODO: Timelimitを追加
 	srv := &http.Server{
 		Handler: h.NewHandler(),
 		Addr:    ":8888",
@@ -141,6 +142,7 @@ func NewHarness(t *testing.T, n int) *Harness {
 func (h *Harness) NewHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/upload", h.HTTPUploadModel)
+	mux.HandleFunc("/download", h.HTTPDownloadModel)
 	return mux
 }
 
@@ -173,12 +175,40 @@ func (h *Harness) HTTPUploadModel(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, msg, http.StatusInternalServerError)
 			return
 		}
-		// sleepMs(400)
 
 		w.WriteHeader(http.StatusOK)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		w.Write([]byte("only post method allowed"))
+	}
+}
+
+func (h *Harness) HTTPDownloadModel(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+
+		origLeaderId, _ := h.CheckSingleLeader()
+		lastCommitId := len(h.commits[origLeaderId]) - 1
+		lastCommit := h.commits[origLeaderId][lastCommitId]
+		m := []byte(fmt.Sprintf("%s", lastCommit.Command))
+
+		u := &Upload{
+			Model: m,
+		}
+
+		jsonResp, err := json.Marshal(u)
+		if err != nil {
+			msg := fmt.Sprintf("json.Marshal failed: %v", err)
+			http.Error(w, msg, http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonResp)
+		w.WriteHeader(http.StatusOK)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		w.Write([]byte("only get method allowed"))
 	}
 }
 
@@ -202,7 +232,7 @@ func (h *Harness) Shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := h.srv.Shutdown(ctx); err != nil {
-		log.Println("Failed to gracefully shutdown:", err)
+		log.Printf("Failed to gracefully shutdown: %v", err)
 	}
 	h.srvWg.Wait()
 }
