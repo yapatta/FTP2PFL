@@ -425,6 +425,33 @@ func (h *Harness) CheckCommitted(cmd int) (nc int, index int) {
 	return -1, -1
 }
 
+// CheckCommittedN verifies that cmd was committed by exactly n connected
+// servers.
+func (h *Harness) CheckCommittedN(cmd int, n int) {
+	nc, _ := h.CheckCommitted(cmd)
+	if nc != n {
+		h.t.Errorf("CheckCommittedN got nc=%d, want %d", nc, n)
+	}
+}
+
+// CheckNotCommitted verifies that no command equal to cmd has been committed
+// by any of the active servers yet.
+func (h *Harness) CheckNotCommitted(cmd int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for i := 0; i < h.n; i++ {
+		if h.connected[i] {
+			for c := 0; c < len(h.commits[i]); c++ {
+				gotCmd := h.commits[i][c].Command.(int)
+				if gotCmd == cmd {
+					h.t.Errorf("found %d at commits[%d][%d], expected none", cmd, i, c)
+				}
+			}
+		}
+	}
+}
+
 func (h *Harness) CheckModelCommitted(cmd []byte) (nc int, index int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -485,26 +512,23 @@ func (h *Harness) CheckModelCommitted(cmd []byte) (nc int, index int) {
 	return -1, -1
 }
 
-// CheckCommittedN verifies that cmd was committed by exactly n connected
-// servers.
-func (h *Harness) CheckCommittedN(cmd int, n int) {
-	nc, _ := h.CheckCommitted(cmd)
+func (h *Harness) CheckModelCommittedN(cmd []byte, n int) {
+	nc, _ := h.CheckModelCommitted(cmd)
 	if nc != n {
 		h.t.Errorf("CheckCommittedN got nc=%d, want %d", nc, n)
 	}
 }
 
-// CheckNotCommitted verifies that no command equal to cmd has been committed
-// by any of the active servers yet.
-func (h *Harness) CheckNotCommitted(cmd int) {
+func (h *Harness) CheckModelNotCommitted(cmd []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	for i := 0; i < h.n; i++ {
 		if h.connected[i] {
 			for c := 0; c < len(h.commits[i]); c++ {
-				gotCmd := h.commits[i][c].Command.(int)
-				if gotCmd == cmd {
+				gotCmd := []byte(fmt.Sprintf("%s", h.commits[i][c].Command))
+
+				if reflect.DeepEqual(gotCmd, cmd) {
 					h.t.Errorf("found %d at commits[%d][%d], expected none", cmd, i, c)
 				}
 			}
