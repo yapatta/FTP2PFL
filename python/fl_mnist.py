@@ -1,6 +1,7 @@
 import collections
 import socket
 import requests
+import urllib3
 from requests.exceptions import Timeout
 from http.client import RemoteDisconnected
 from urllib3.util import Retry
@@ -92,7 +93,7 @@ def main():
     state = iterative_process.initialize()
 
     # N Roundで学習する
-    NUM_ROUNDS = 10
+    NUM_ROUNDS = 3
     for round_num in range(NUM_ROUNDS):
         state, metrics = iterative_process.next(state, federated_train_data)
         # (784, 10)
@@ -108,22 +109,24 @@ def main():
         wb_all_ori = fwb_ori + lwb_ori
 
         session = requests.Session()
-        retries = Retry(total=5,  # リトライ回数
+        retries = Retry(total=1,  # リトライ回数
                         backoff_factor=1,  # sleep時間
                         status_forcelist=[500, 502, 503, 504])
         session.mount("http://", HTTPAdapter(max_retries=retries))
 
+        print('round {:2d}, metrics={}'.format(round_num + 1, metrics))
         try:
             headers = {'Content-type': "application/json"}
             payload = {'model': base64.b64encode(wb_all_ori).decode('utf-8')}
             r = session.post('http://localhost:8888/upload',
-                             data=json.dumps(payload), headers=headers, stream=True, timeout=(10.0, 30.0))
+                             data=json.dumps(payload), headers=headers, stream=True, timeout=(5.0, 5.0))
             print(r)
             # MEMO: Commitされる時間待つ
-            time.sleep(8)
+            time.sleep(5)
 
             # グローバルモデルを取り出す
-            r = session.get("http://localhost:8888/download")
+            r = session.get("http://localhost:8888/download",
+                            stream=True, timeout=(5.0, 5.0))
             res_data = r.json()
             wb_all = base64.b64decode((res_data['model'].encode()))
 
@@ -143,9 +146,10 @@ def main():
             state.model.trainable[1] = lw
 
         except requests.exceptions.ConnectionError:
-            sys.exit()
+            continue
 
-        print('round {:2d}, metrics={}'.format(round_num + 1, metrics))
+        except urllib3.exceptions.ReadTimeoutError:
+            continue
     # バイナリ化した重みを復元 -> len10のndarray
     # np.frombuffer(weights, dtype=np.dtype('float32'), count=-1, offset=0)
 

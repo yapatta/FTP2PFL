@@ -170,7 +170,9 @@ func (h *Harness) HTTPUploadModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		h.mu.Lock()
 		origLeaderId, _ := h.CheckSingleLeader()
+		h.mu.Unlock()
 		if !h.SubmitToServer(origLeaderId, u.Model) {
 			msg := fmt.Sprintf("want id=%d leader, but it's not", origLeaderId)
 			http.Error(w, msg, http.StatusInternalServerError)
@@ -187,10 +189,17 @@ func (h *Harness) HTTPUploadModel(w http.ResponseWriter, r *http.Request) {
 func (h *Harness) HTTPDownloadModel(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		h.mu.Lock()
 		origLeaderId, _ := h.CheckSingleLeader()
 
-		h.mu.Lock()
 		lastCommitId := len(h.commits[origLeaderId]) - 1
+		if lastCommitId < 0 {
+			h.mu.Unlock()
+			msg := "Commit ID doesn't exist"
+			http.Error(w, msg, http.StatusInternalServerError)
+			return
+		}
+
 		lastCommit := h.commits[origLeaderId][lastCommitId]
 		m := []byte(fmt.Sprintf("%s", lastCommit.Command))
 		h.mu.Unlock()
@@ -252,7 +261,9 @@ func (h *Harness) DisconnectPeer(id int) {
 			h.cluster[j].DisconnectPeer(id)
 		}
 	}
+	h.mu.Lock()
 	h.connected[id] = false
+	h.mu.Unlock()
 }
 
 // ReconnectPeer connects a server to all other servers in the cluster.
@@ -268,7 +279,9 @@ func (h *Harness) ReconnectPeer(id int) {
 			}
 		}
 	}
+	h.mu.Lock()
 	h.connected[id] = true
+	h.mu.Unlock()
 }
 
 // CrashPeer "crashes" a server by disconnecting it from all peers and then
@@ -557,7 +570,7 @@ func (h *Harness) collectCommits(i int) {
 	// 受け取ったchannelをずっと
 	for c := range h.commitChans[i] {
 		h.mu.Lock()
-		// tlog("collectCommits(%d) got %+v", i, c)
+		tlog("collectCommits(%d) got %+v", i, c)
 		h.commits[i] = append(h.commits[i], c)
 		h.mu.Unlock()
 	}

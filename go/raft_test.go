@@ -205,12 +205,26 @@ func TestFederatedLearning(t *testing.T) {
 	h := NewHarness(t, 3)
 	defer h.Shutdown()
 
-	sleepMs(100_000)
-	//cmd := exec.Command("sh", "-c", "../venv/bin/python ../python/fl_mnist.py 1>&2")
-	//tlog("%v", cmd)
-	// cmd := exec.Command("../venv/bin/python", "../python/fl_mnist.py")
-	//ps, err := cmd.CombinedOutput()
-	//tlog("ps: %v, err: %v", ps, err)
+	// Submit a couple of values to a fully connected cluster.
+	origLeaderId, _ := h.CheckSingleLeader()
+
+	sleepMs(2000)
+
+	dPeerId := (origLeaderId + 1) % 3
+	h.DisconnectPeer(dPeerId)
+	sleepMs(6000)
+
+	// Submit a new command; it will be committed but only to two servers.
+	sleepMs(2000)
+	// h.CheckModelCommittedN(7, 2)
+
+	// Now reconnect dPeerId and wait a bit; it should find the new command too.
+	h.ReconnectPeer(dPeerId)
+	sleepMs(2000)
+	h.CheckSingleLeader()
+
+	sleepMs(10000)
+	// h.CheckCommittedN(7, 3)
 }
 
 func TestCommitMultipleCommands(t *testing.T) {
