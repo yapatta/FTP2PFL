@@ -205,7 +205,7 @@ func TestFederatedLearning(t *testing.T) {
 	h := NewHarness(t, 3)
 	defer h.Shutdown()
 
-	sleepMs(40_000)
+	sleepMs(100_000)
 	//cmd := exec.Command("sh", "-c", "../venv/bin/python ../python/fl_mnist.py 1>&2")
 	//tlog("%v", cmd)
 	// cmd := exec.Command("../venv/bin/python", "../python/fl_mnist.py")

@@ -92,7 +92,7 @@ def main():
     state = iterative_process.initialize()
 
     # N Roundで学習する
-    NUM_ROUNDS = 3
+    NUM_ROUNDS = 10
     for round_num in range(NUM_ROUNDS):
         state, metrics = iterative_process.next(state, federated_train_data)
         # (784, 10)
@@ -120,7 +120,7 @@ def main():
                              data=json.dumps(payload), headers=headers, stream=True, timeout=(10.0, 30.0))
             print(r)
             # MEMO: Commitされる時間待つ
-            time.sleep(10)
+            time.sleep(8)
 
             # グローバルモデルを取り出す
             r = session.get("http://localhost:8888/download")
