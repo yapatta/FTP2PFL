@@ -93,7 +93,7 @@ def main():
     state = iterative_process.initialize()
 
     # N Roundで学習する
-    NUM_ROUNDS = 3
+    NUM_ROUNDS = 15
     for round_num in range(NUM_ROUNDS):
         state, metrics = iterative_process.next(state, federated_train_data)
         # (784, 10)
@@ -122,11 +122,12 @@ def main():
                              data=json.dumps(payload), headers=headers, stream=True, timeout=(5.0, 5.0))
             print(r)
             # MEMO: Commitされる時間待つ
-            time.sleep(5)
+            time.sleep(1)
 
             # グローバルモデルを取り出す
             r = session.get("http://localhost:8888/download",
                             stream=True, timeout=(5.0, 5.0))
+            print(r)
             res_data = r.json()
             wb_all = base64.b64decode((res_data['model'].encode()))
 
@@ -144,6 +145,9 @@ def main():
             # 保存された全体モデルを元に修正
             state.model.trainable[0] = fw
             state.model.trainable[1] = lw
+
+        except Exception:
+            continue
 
         except requests.exceptions.ConnectionError:
             continue

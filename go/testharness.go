@@ -170,9 +170,13 @@ func (h *Harness) HTTPUploadModel(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		h.mu.Lock()
 		origLeaderId, _ := h.CheckSingleLeader()
-		h.mu.Unlock()
+		if origLeaderId < 0 {
+			msg := "Leader doesn't exist"
+			http.Error(w, msg, http.StatusInternalServerError)
+			return
+		}
+
 		if !h.SubmitToServer(origLeaderId, u.Model) {
 			msg := fmt.Sprintf("want id=%d leader, but it's not", origLeaderId)
 			http.Error(w, msg, http.StatusInternalServerError)
@@ -189,20 +193,23 @@ func (h *Harness) HTTPUploadModel(w http.ResponseWriter, r *http.Request) {
 func (h *Harness) HTTPDownloadModel(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		h.mu.Lock()
+
 		origLeaderId, _ := h.CheckSingleLeader()
+		if origLeaderId < 0 {
+			msg := "Leader doesn't exist"
+			http.Error(w, msg, http.StatusInternalServerError)
+			return
+		}
 
 		lastCommitId := len(h.commits[origLeaderId]) - 1
 		if lastCommitId < 0 {
-			h.mu.Unlock()
 			msg := "Commit ID doesn't exist"
 			http.Error(w, msg, http.StatusInternalServerError)
 			return
 		}
 
 		lastCommit := h.commits[origLeaderId][lastCommitId]
-		m := []byte(fmt.Sprintf("%s", lastCommit.Command))
-		h.mu.Unlock()
+		m := lastCommit.Command.([]byte)
 
 		u := &Upload{
 			Model: m,
@@ -227,12 +234,11 @@ func (h *Harness) HTTPDownloadModel(w http.ResponseWriter, r *http.Request) {
 // Shutdown shuts down all the servers in the harness and waits for them to
 // stop running.
 func (h *Harness) Shutdown() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	for i := 0; i < h.n; i++ {
 		h.cluster[i].DisconnectAll()
+		h.mu.Lock()
 		h.connected[i] = false
+		h.mu.Unlock()
 	}
 	for i := 0; i < h.n; i++ {
 		if h.alive[i] {
@@ -334,8 +340,11 @@ func (h *Harness) CheckSingleLeader() (int, int) {
 		leaderId := -1
 		leaderTerm := -1
 		for i := 0; i < h.n; i++ {
+			h.mu.Lock()
+			isConnected := h.connected[i]
+			h.mu.Unlock()
 			// connectしているリーダーは一人だけ
-			if h.connected[i] {
+			if isConnected {
 				_, term, isLeader := h.cluster[i].cm.Report()
 				if isLeader {
 					if leaderId < 0 {

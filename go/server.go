@@ -75,7 +75,7 @@ func (s *Server) Serve() {
 	log.Printf("[%v] listening at %s", s.serverId, s.listener.Addr())
 	s.mu.Unlock()
 
-	go s.battery.NormalAction()
+	go s.battery.NormalAction(s.serverId)
 
 	s.wg.Add(1)
 	go func() {
