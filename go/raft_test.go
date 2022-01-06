@@ -202,7 +202,7 @@ func TestSubmitNonLeaderFails(t *testing.T) {
 func TestFederatedLearning(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
 
-	h := NewHarness(t, 3)
+	h := NewHarness(t, 6)
 	defer h.Shutdown()
 
 	// Submit a couple of values to a fully connected cluster.

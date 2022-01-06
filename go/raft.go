@@ -286,11 +286,6 @@ func (cm *ConsensusModule) RequestVote(args RequestVoteArgs, reply *RequestVoteR
 		cm.becomeFollower(args.Term)
 	}
 
-	if !cm.server.battery.Enough() {
-		cm.dlog("... battery is not enough in RequestVote")
-		cm.becomeFollower(args.Term)
-	}
-
 	if cm.currentTerm == args.Term &&
 		(cm.votedFor == -1 || cm.votedFor == args.CandidateId) &&
 		(args.LastLogTerm > lastLogTerm ||
@@ -471,7 +466,7 @@ func (cm *ConsensusModule) runElectionTimer() {
 
 		// Start an election if we haven't heard from a leader or haven't voted for
 		// someone for the duration of the timeout.
-		if elapsed := time.Since(cm.electionResetEvent); elapsed >= timeoutDuration {
+		if elapsed := time.Since(cm.electionResetEvent); elapsed >= timeoutDuration && cm.server.battery.Enough() {
 			cm.startElection()
 			cm.mu.Unlock()
 			return

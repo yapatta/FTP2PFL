@@ -18,7 +18,7 @@ import tensorflow as tf
 import tensorflow_federated as tff
 from matplotlib import pyplot as plt
 
-NUM_CLIENTS = 10
+NUM_CLIENTS = 6
 NUM_EPOCHS = 5
 BATCH_SIZE = 20
 SHUFFLE_BUFFER = 100
