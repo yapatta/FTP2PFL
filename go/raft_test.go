@@ -3,6 +3,7 @@
 package raft
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -602,6 +603,22 @@ func TestReplaceMultipleLogEntries(t *testing.T) {
 	h.CheckNotCommitted(21)
 	h.CheckCommittedN(11, 3)
 	h.CheckCommittedN(10, 3)
+}
+
+// 手動でFLを実行(Raftを使わない)
+func TestFLManually(t *testing.T) {
+	// 初期化
+	modelPath := "parent.model"
+	_, err := os.Stat(modelPath)
+	if !os.IsNotExist(err) {
+		if r := os.Remove(modelPath); r != nil {
+			t.Fatal(r)
+		}
+	}
+
+	if !ExecFLManually() {
+		t.Fatal("initial_learn() in aggregator.py failed")
+	}
 }
 
 func TestCrashAfterSubmit(t *testing.T) {
