@@ -1,12 +1,16 @@
 import tensorflow as tf
 import tensorflow_datasets as tfds
 import numpy as np
+import sys
 import os
 from typing import List
 
 MODEL_FILE = "client{}.model"
 PARENT_MODEL_FILE = "parent.model"
-EPOCHS = 6
+EPOCHS = 10
+
+# for test
+# os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
 
 def fetch_train_test_data():
@@ -82,10 +86,10 @@ def save_client_weights(weights: List[np.ndarray], id: int):
         f.write(wb_all)
 
 
-def learn(id: int):
+def learn(id: int) -> List[np.ndarray]:
     pw = load_parent_model()
     if len(pw) == 0:
-        os.exit(1)
+        sys.exit(1)
 
     model.layers[1].set_weights(pw)
 
@@ -96,4 +100,8 @@ def learn(id: int):
         validation_data=ds_test,
     )
 
-    save_client_weights(model.layers[1].get_weights(), id)
+    weights = model.layers[1].get_weights()
+
+    save_client_weights(weights, id)
+
+    return weights
