@@ -6,12 +6,16 @@ package raft
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/gob"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -19,6 +23,7 @@ import (
 )
 
 const DebugCM = 1
+const ParentModelFile = "parent.model"
 
 // CommitEntry is the data reported by Raft to the commit channel. Each commit
 // entry notifies the client that consensus was reached on a command and it can
@@ -104,7 +109,13 @@ type ConsensusModule struct {
 
 	// triggerAEChan is an internal notification channel used to trigger
 	// sending new AEs to followers when interesting changes occurred.
+	// こいつを受け取るとleaderがAppendEntriesを送る
 	triggerAEChan chan struct{}
+
+	// こいつがAggregateのトリガー
+	triggerAggregateChan chan struct{}
+	// 今のラウンドのモデル
+	models [][]byte
 
 	// Persistent Raft state on all servers
 	currentTerm int
@@ -323,7 +334,7 @@ type AppendEntriesReply struct {
 	ConflictTerm  int
 }
 
-// ApendEntriesを受け取った
+// ApendEntriesを受け取った側の処理
 func (cm *ConsensusModule) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -562,6 +573,45 @@ func (cm *ConsensusModule) startLeader() {
 	// This goroutine runs in the background and sends AEs to peers:
 	// * Whenever something is sent on triggerAEChan
 	// * ... Or every 50 ms, if no events occur on triggerAEChan
+	go func(learningTimeout time.Duration) {
+		cm.leaderSendModels()
+
+		t := time.NewTimer(learningTimeout)
+		defer t.Stop()
+		for {
+			doSend := false
+			select {
+			case <-t.C:
+				doSend = true
+				t.Stop()
+				t.Reset(learningTimeout)
+			case _, ok := <-cm.triggerAggregateChan:
+				if ok {
+					doSend = true
+				} else {
+					return
+				}
+
+				// Reset timer for heartbeatTimeout.
+				// ref. https://makiuchi-d.github.io/2019/12/11/qiita-e1024e3abbd0d71e1fcf.ja.html
+				if !t.Stop() {
+					<-t.C // チャンネルからイベントを取り除く
+				}
+				t.Reset(learningTimeout)
+			}
+
+			if doSend {
+				cm.mu.Lock()
+				if cm.state != Leader {
+					cm.mu.Unlock()
+					return
+				}
+				cm.mu.Unlock()
+				cm.leaderSendModels()
+			}
+		}
+	}(14 * time.Second)
+
 	go func(heartbeatTimeout time.Duration) {
 		// Immediately send AEs to peers.
 		cm.leaderSendAEs()
@@ -602,6 +652,203 @@ func (cm *ConsensusModule) startLeader() {
 			}
 		}
 	}(50 * time.Millisecond)
+
+}
+
+func ReadParentModel() ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://0.0.0.0:9000/initial", http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	byteArray, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var u Upload
+	if err := json.Unmarshal(byteArray, &u); err != nil {
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	return u.Model, nil
+	// return ReadModel(ParentModelFile)
+}
+
+func ReadClientModel(id int) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://0.0.0.0:9000/clients/%v", id), http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	byteArray, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var u Upload
+	if err := json.Unmarshal(byteArray, &u); err != nil {
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	return u.Model, nil
+}
+
+type SendParentModelArgs struct {
+	Model []byte
+}
+
+func (sma SendParentModelArgs) String() string {
+	return fmt.Sprintf("SendParentModelArgs{Hash: %v}", hex.EncodeToString(getBinaryBySHA256(string(sma.Model))))
+}
+
+type SendParentModelReply struct {
+	Success     bool
+	ClientModel []byte
+}
+
+func (cm *ConsensusModule) SendParentModel(args SendParentModelArgs, reply *SendParentModelReply) error {
+
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.state == Dead {
+		return nil
+	}
+	cm.dlog("SendParentModel: %+v", args)
+
+	/*
+		if err := WriteModel(ParentModelFile, args.Model); err != nil {
+			return fmt.Errorf("WriteModel failed: %v", err)
+		}
+	*/
+
+	// TODO: ここをHTTPRequestに変えたら?
+
+	/*
+			if !ClientLearn(cm.id) {
+				return fmt.Errorf("learn(%v) in client.py failed", cm.id)
+			}
+
+		clientModelName := fmt.Sprintf("client%d.model", cm.id)
+		cb, err := ReadModel(clientModelName)
+		if err != nil {
+			return fmt.Errorf("ReadModel failed: %v", err)
+		}
+	*/
+
+	m, err := ReadClientModel(cm.id)
+	if err != nil {
+		return err
+	}
+
+	reply.Success = true
+	reply.ClientModel = m
+	return nil
+}
+
+func (cm *ConsensusModule) leaderSendModels() {
+	parentModel, err := ReadParentModel()
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	// リセット
+	cm.models = [][]byte{}
+
+	args := &SendParentModelArgs{
+		Model: parentModel,
+	}
+
+	wg := &sync.WaitGroup{}
+	for _, peerId := range cm.peerIds {
+		wg.Add(1)
+		go func(peerId int) {
+			cm.dlog("sending ParentModel to %v: args=%+v", peerId, args)
+			var reply SendParentModelReply
+			if err := cm.server.Call(peerId, "Federated.SendParentModel", args, &reply); err != nil {
+				cm.dlog("SendParentModel failed to %v: %v", peerId, err)
+			}
+			if reply.Success {
+				cm.mu.Lock()
+				cm.models = append(cm.models, reply.ClientModel)
+				cm.mu.Unlock()
+			}
+			wg.Done()
+		}(peerId)
+	}
+	wg.Wait()
+
+	updatedParentModel, err := cm.ReadAggregatedModel()
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	// Raftでバックアップ
+	if !cm.Submit(updatedParentModel) {
+		return
+	}
+
+	cm.triggerAggregateChan <- struct{}{}
+}
+
+func (cm *ConsensusModule) ReadAggregatedModel() ([]byte, error) {
+	cm.mu.Lock()
+	models := map[string][][]byte{"models": cm.models}
+	jsonStr, err := json.Marshal(models)
+	if err != nil {
+		return nil, err
+	}
+
+	cm.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://0.0.0.0:9000/aggregate", bytes.NewBuffer(jsonStr))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	byteArray, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var u Upload
+	if err := json.Unmarshal(byteArray, &u); err != nil {
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	return u.Model, nil
 }
 
 // leaderSendAEs sends a round of AEs to all peers, collects their

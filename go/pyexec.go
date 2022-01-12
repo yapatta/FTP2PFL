@@ -6,8 +6,17 @@ package raft
 import "C"
 import (
 	"fmt"
+	"os"
 	"unsafe"
 )
+
+func InitializePython() {
+	C.Py_Initialize()
+}
+
+func FinalizePython() {
+	C.Py_Finalize()
+}
 
 func SetPath() {
 	sys := C.PyImport_ImportModule(C.CString("sys"))
@@ -78,10 +87,9 @@ func ExecFLManually() bool {
 
 	// Client Learn
 	for i := 0; i < 3; i++ {
-		if !ClientLearn(i) {
-			// log.Fatalln("learn() in client.py failed")
-			return false
-		}
+		// マルチスレッドだと死ぬぽい
+		ClientLearn(i)
+		// log.Fatalln("learn() in client.py failed")
 	}
 
 	if !ServerAggregate() {
@@ -90,4 +98,21 @@ func ExecFLManually() bool {
 	}
 
 	return true
+}
+
+func ReadModel(filename string) ([]byte, error) {
+	b, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	return b, nil
+}
+
+func WriteModel(filename string, b []byte) error {
+	if err := os.WriteFile(filename, b, 0666); err != nil {
+		return err
+	}
+
+	return nil
 }

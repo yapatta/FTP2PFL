@@ -605,6 +605,15 @@ func TestReplaceMultipleLogEntries(t *testing.T) {
 	h.CheckCommittedN(10, 3)
 }
 
+func TestFLonRaft(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
+
+	h := NewHarness(t, 3)
+	defer h.Shutdown()
+
+	sleepMs(60_000)
+}
+
 // 手動でFLを実行(Raftを使わない)
 func TestFLManually(t *testing.T) {
 	// 初期化

@@ -65,7 +65,9 @@ func (s *Server) Serve() {
 	// to n.cm
 	s.rpcServer = rpc.NewServer()
 	s.rpcProxy = &RPCProxy{cm: s.cm}
+	// 階層を作る ex: ConsensusModule.RequestVote
 	s.rpcServer.RegisterName("ConsensusModule", s.rpcProxy)
+	s.rpcServer.RegisterName("Federated", s.rpcProxy)
 
 	var err error
 	s.listener, err = net.Listen("tcp", ":0") // ポート0で開くぜ
@@ -211,4 +213,8 @@ func (rpp *RPCProxy) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesR
 		time.Sleep(time.Duration(1+rand.Intn(5)) * time.Millisecond)
 	}
 	return rpp.cm.AppendEntries(args, reply)
+}
+
+func (rpp *RPCProxy) SendParentModel(args SendParentModelArgs, reply *SendParentModelReply) error {
+	return rpp.cm.SendParentModel(args, reply)
 }
