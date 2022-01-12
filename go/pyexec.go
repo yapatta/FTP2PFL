@@ -28,9 +28,9 @@ func SetPath() {
 
 func ExecString(s string) int {
 	c := C.CString(s)
+	defer C.free(unsafe.Pointer(c))
 
 	ret := C.PyRun_SimpleString(c)
-	C.free(unsafe.Pointer(c))
 	return int(ret)
 }
 
