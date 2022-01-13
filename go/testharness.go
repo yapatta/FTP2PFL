@@ -122,8 +122,11 @@ func NewHarness(t *testing.T, n int) *Harness {
 
 	// TODO: Timelimitを追加
 	srv := &http.Server{
-		Handler: h.NewHandler(),
-		Addr:    ":8888",
+		Handler:      h.NewHandler(),
+		Addr:         ":8888",
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  720 * time.Second,
 	}
 	h.srv = srv
 
