@@ -1,5 +1,11 @@
-# research_impl
-For research
+# 耐障害性を持ったFederatedLearningフレームワーク
+
+## install
+
+```sh
+pip install --upgrade pip
+pip install -r requirements.txt
+```
 
 ## Test
 
