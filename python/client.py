@@ -3,7 +3,7 @@ import tensorflow_datasets as tfds
 import numpy as np
 import sys
 import os
-from typing import List
+from typing import List, ByteString
 
 MODEL_FILE = "client{}.model"
 PARENT_MODEL_FILE = "parent.model"
@@ -11,6 +11,15 @@ EPOCHS = 10
 
 # for test
 # os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
+def bytes2model(wb_all: ByteString) -> List[np.ndarray]:
+    fw = np.frombuffer(wb_all[:31360], dtype=np.dtype(
+        'float32'), count=-1, offset=0).reshape(784, 10)
+    lw = np.frombuffer(wb_all[-40:], dtype=np.dtype(
+        'float32'), count=-1, offset=0).reshape(10)
+    ret = [fw, lw]
+    return ret
+
 
 
 def fetch_train_test_data():
@@ -86,11 +95,8 @@ def save_client_weights(weights: List[np.ndarray], id: int):
         f.write(wb_all)
 
 
-def learn(id: int) -> List[np.ndarray]:
-    pw = load_parent_model()
-    if len(pw) == 0:
-        sys.exit(1)
-
+def learn(id: int, bmodel: ByteString) -> List[np.ndarray]:
+    pw = bytes2model(bmodel)
     model.layers[1].set_weights(pw)
 
     ds_train, ds_test = fetch_train_test_data()
@@ -102,6 +108,6 @@ def learn(id: int) -> List[np.ndarray]:
 
     weights = model.layers[1].get_weights()
 
-    save_client_weights(weights, id)
+    # save_client_weights(weights, id)
 
     return weights

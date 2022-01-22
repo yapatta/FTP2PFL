@@ -215,6 +215,6 @@ func (rpp *RPCProxy) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesR
 	return rpp.cm.AppendEntries(args, reply)
 }
 
-func (rpp *RPCProxy) SendParentModel(args SendParentModelArgs, reply *SendParentModelReply) error {
-	return rpp.cm.SendParentModel(args, reply)
+func (rpp *RPCProxy) ModelAggregation(args ModelAggregationArgs, reply *ModelAggregationReply) error {
+	return rpp.cm.ModelAggregation(args, reply)
 }

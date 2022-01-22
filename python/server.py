@@ -11,21 +11,27 @@ import client
 
 def create_app(test_config=None):
     app = Flask(__name__, instance_relative_config=True)
-    cors = CORS(app)
+    cors  = CORS(app)
 
-    @app.route("/clients/<client_id>", methods=['GET'])
+    @app.route("/clients/<client_id>", methods=['POST'])
     @cross_origin(origin="*")
     def clients(client_id):
+        dumped_json = json.dumps(request.json)
+        model = (json.loads(dumped_json))["model"]
+        bmodel = base64.b64decode((model.encode()))
+
         client_id = int(client_id)
-        weights = client.learn(client_id)
+        weights = client.learn(client_id, bmodel)
         buf = ag.byte_weights(weights)
+        print("already response: {}".format(client_id))
         return jsonify({'model': base64.b64encode(buf).decode('utf-8')}), 200
 
     @app.route("/initial", methods=['GET'])
     @cross_origin(origin="*")
     def initial():
-        weights = ag.initial_learn() if not os.path.exists(
-            ag.MODEL_FILE) else ag.load_parent_model()
+        # weights = ag.initial_learn() if not os.path.exists(
+        #    ag.MODEL_FILE) else ag.load_parent_model()
+        weights = ag.initial_learn()
         buf = ag.byte_weights(weights)
         return jsonify({'model': base64.b64encode(buf).decode('utf-8')}), 200
 
@@ -38,6 +44,7 @@ def create_app(test_config=None):
             (m.encode())), (json.loads(dumped_json))["models"])
         weights = ag.aggregate(bmodels)
         buf = ag.byte_weights(weights)
+        print("aggregate!!!!")
         return jsonify({'model': base64.b64encode(buf).decode('utf-8')}), 200
 
     return app

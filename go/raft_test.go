@@ -202,22 +202,22 @@ func TestSubmitNonLeaderFails(t *testing.T) {
 func TestFederatedLearning(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
 
-	h := NewHarness(t, 6)
+	h := NewHarness(t, 3)
 	defer h.Shutdown()
 
 	// Submit a couple of values to a fully connected cluster.
 	sleepMs(8_000)
-	origLeaderId, _ := h.CheckSingleLeader()
-	dPeerId := (origLeaderId + 1) % 3
-	h.DisconnectPeer(dPeerId)
+	//origLeaderId, _ := h.CheckSingleLeader()
+	//dPeerId := (origLeaderId + 1) % 3
+	//h.DisconnectPeer(dPeerId)
 	sleepMs(8_000)
 
 	// Submit a new command; it will be committed but only to two servers.
 	// h.CheckModelCommittedN(7, 2)
 
 	// Now reconnect dPeerId and wait a bit; it should find the new command too.
-	h.ReconnectPeer(dPeerId)
-	sleepMs(20_000)
+	//h.ReconnectPeer(dPeerId)
+	sleepMs(30_000)
 	// h.CheckSingleLeader()
 
 	// sleepMs(6_000)

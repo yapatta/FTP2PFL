@@ -5,12 +5,9 @@
 package raft
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
-	"net/http"
 	"reflect"
 	"sync"
 	"testing"
@@ -57,10 +54,6 @@ type Harness struct {
 	// connected implies alive.
 	alive []bool
 
-	srv *http.Server
-
-	srvWg *sync.WaitGroup
-
 	n int
 	t *testing.T
 }
@@ -104,9 +97,6 @@ func NewHarness(t *testing.T, n int) *Harness {
 	// ElectionTimerを始動
 	close(ready)
 
-	srvWg := &sync.WaitGroup{}
-	srvWg.Add(1)
-
 	h := &Harness{
 		cluster:     ns,
 		storage:     storage,
@@ -114,121 +104,14 @@ func NewHarness(t *testing.T, n int) *Harness {
 		commits:     commits,
 		connected:   connected,
 		alive:       alive,
-		srv:         nil,
-		srvWg:       srvWg,
 		n:           n,
 		t:           t,
 	}
-
-	// TODO: Timelimitを追加
-	srv := &http.Server{
-		Handler: h.NewHandler(),
-		Addr:    ":8888",
-	}
-	h.srv = srv
-
-	go func() {
-		defer srvWg.Done()
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-			log.Fatalf("ListenAndServe(): %v", err)
-		}
-	}()
 
 	for i := 0; i < n; i++ {
 		go h.collectCommits(i)
 	}
 	return h
-}
-
-func (h *Harness) NewHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/upload", h.HTTPUploadModel)
-	mux.HandleFunc("/download", h.HTTPDownloadModel)
-	return mux
-}
-
-func (h *Harness) HTTPUploadModel(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPost:
-		if val := r.Header.Get("Content-Type"); val != "" {
-			if val != "application/json" {
-				msg := "Content-Type header is not application/json"
-				http.Error(w, msg, http.StatusUnsupportedMediaType)
-				return
-			}
-		}
-		body := r.Body
-		defer body.Close()
-
-		dec := json.NewDecoder(body)
-		dec.DisallowUnknownFields()
-
-		var u Upload
-		if err := dec.Decode(&u); err != nil {
-			msg := "JSON decode failed"
-			http.Error(w, msg, http.StatusInternalServerError)
-			return
-		}
-
-		origLeaderId, _ := h.CheckSingleLeader()
-		if origLeaderId < 0 {
-			msg := "Leader doesn't exist"
-			http.Error(w, msg, http.StatusInternalServerError)
-			return
-		}
-
-		if !h.SubmitToServer(origLeaderId, u.Model) {
-			msg := fmt.Sprintf("want id=%d leader, but it's not", origLeaderId)
-			http.Error(w, msg, http.StatusInternalServerError)
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		w.Write([]byte("only post method allowed"))
-	}
-}
-
-func (h *Harness) HTTPDownloadModel(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-
-		origLeaderId, _ := h.CheckSingleLeader()
-		if origLeaderId < 0 {
-			msg := "Leader doesn't exist"
-			http.Error(w, msg, http.StatusInternalServerError)
-			return
-		}
-
-		lastCommitId := len(h.commits[origLeaderId]) - 1
-		if lastCommitId < 0 {
-			msg := "Commit ID doesn't exist"
-			http.Error(w, msg, http.StatusInternalServerError)
-			return
-		}
-
-		lastCommit := h.commits[origLeaderId][lastCommitId]
-		m := lastCommit.Command.([]byte)
-
-		u := &Upload{
-			Model: m,
-		}
-
-		jsonResp, err := json.Marshal(u)
-		if err != nil {
-			msg := fmt.Sprintf("json.Marshal failed: %v", err)
-			http.Error(w, msg, http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(jsonResp)
-		w.WriteHeader(http.StatusOK)
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		w.Write([]byte("only get method allowed"))
-	}
 }
 
 // Shutdown shuts down all the servers in the harness and waits for them to
@@ -249,13 +132,6 @@ func (h *Harness) Shutdown() {
 	for i := 0; i < h.n; i++ {
 		close(h.commitChans[i])
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	if err := h.srv.Shutdown(ctx); err != nil {
-		log.Printf("Failed to gracefully shutdown: %v", err)
-	}
-	h.srvWg.Wait()
 }
 
 // DisconnectPeer disconnects a server from all other servers in the cluster.

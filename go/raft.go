@@ -610,7 +610,7 @@ func (cm *ConsensusModule) startLeader() {
 				cm.leaderSendModels()
 			}
 		}
-	}(14 * time.Second)
+	}(30 * time.Second)
 
 	go func(heartbeatTimeout time.Duration) {
 		// Immediately send AEs to peers.
@@ -655,7 +655,20 @@ func (cm *ConsensusModule) startLeader() {
 
 }
 
-func ReadParentModel() ([]byte, error) {
+func (cm *ConsensusModule) ReadParentModel() ([]byte, error) {
+	cm.mu.Lock()
+	uptodateLogIndex := len(cm.log) - 1
+	cm.dlog("uptodatelogindex: %v", uptodateLogIndex)
+	// 最新のコミットログを取得
+	if uptodateLogIndex >= 0 {
+		e := cm.log[uptodateLogIndex]
+		cm.mu.Unlock()
+		m := e.Command.([]byte)
+
+		return m, nil
+	}
+	cm.mu.Unlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 	defer cancel()
 
@@ -673,7 +686,6 @@ func ReadParentModel() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	var u Upload
 	if err := json.Unmarshal(byteArray, &u); err != nil {
 		return nil, err
@@ -682,23 +694,24 @@ func ReadParentModel() ([]byte, error) {
 		return nil, err
 	}
 	return u.Model, nil
-	// return ReadModel(ParentModelFile)
 }
 
-func ReadClientModel(id int, m []byte) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
-	defer cancel()
-
+func (cm *ConsensusModule) ReadClientModel(m []byte) ([]byte, error) {
 	model := map[string][]byte{"model": m}
 	jsonStr, err := json.Marshal(model)
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://0.0.0.0:9000/clients/%v", id), bytes.NewBuffer(jsonStr))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://0.0.0.0:9000/clients/%v", cm.id), bytes.NewBuffer(jsonStr))
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -720,58 +733,44 @@ func ReadClientModel(id int, m []byte) ([]byte, error) {
 	return u.Model, nil
 }
 
-type SendParentModelArgs struct {
+type ModelAggregationArgs struct {
 	Model []byte
 	Term  int
 }
 
-func (sma SendParentModelArgs) String() string {
-	return fmt.Sprintf("SendParentModelArgs{Hash: %v}", hex.EncodeToString(getBinaryBySHA256(string(sma.Model))))
+func (maa ModelAggregationArgs) String() string {
+	return fmt.Sprintf("ModelAggregationArgs{Hash: %v, Term: %v}", hex.EncodeToString(getBinaryBySHA256(string(maa.Model))), maa.Term)
 }
 
-type SendParentModelReply struct {
+type ModelAggregationReply struct {
 	Success     bool
 	Term        int
 	ClientModel []byte
 }
 
-func (cm *ConsensusModule) SendParentModel(args SendParentModelArgs, reply *SendParentModelReply) error {
+func (mar ModelAggregationReply) String() string {
+	return fmt.Sprintf("ModelAggregationReply{Success: %v, Term: %v, ClientModel: %v}", mar.Success, mar.Term, hex.EncodeToString(getBinaryBySHA256(string(mar.ClientModel))))
+}
+
+func (cm *ConsensusModule) ModelAggregation(args ModelAggregationArgs, reply *ModelAggregationReply) error {
 
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	if cm.state == Dead {
 		return nil
 	}
-	cm.dlog("SendParentModel: %+v", args)
-
-	/*
-		if err := WriteModel(ParentModelFile, args.Model); err != nil {
-			return fmt.Errorf("WriteModel failed: %v", err)
-		}
-	*/
-
-	// TODO: ここをHTTPRequestに変えたら?
-
-	/*
-			if !ClientLearn(cm.id) {
-				return fmt.Errorf("learn(%v) in client.py failed", cm.id)
-			}
-
-		clientModelName := fmt.Sprintf("client%d.model", cm.id)
-		cb, err := ReadModel(clientModelName)
-		if err != nil {
-			return fmt.Errorf("ReadModel failed: %v", err)
-		}
-	*/
+	cm.dlog("ModelAggregation: %+v", args)
+	cm.dlog("currentTerm: %+v", cm.currentTerm)
 
 	reply.Success = false
 	if args.Term == cm.currentTerm {
 		// 現在のタームが同じで自身がフォロワーじゃない場合フォロワーになる
 		if cm.state != Follower {
-			return nil
+			return fmt.Errorf("ID: %v is not Follower", cm.id)
 		}
 
-		m, err := ReadClientModel(cm.id, args.Model)
+		// FIXME: レスポンス自体は受け取っている
+		m, err := cm.ReadClientModel(args.Model)
 		if err != nil {
 			return err
 		}
@@ -781,27 +780,30 @@ func (cm *ConsensusModule) SendParentModel(args SendParentModelArgs, reply *Send
 		reply.Term = cm.currentTerm
 	}
 
-	cm.persistToStorage()
-	cm.dlog("SendParentModel reply: %+v", *reply)
+	cm.dlog("ModelAggregation reply: %+v", *reply)
 
 	return nil
 }
 
 func (cm *ConsensusModule) leaderSendModels() {
-	cm.mu.Lock()
-	savedCurrentTerm := cm.currentTerm
-	cm.mu.Unlock()
+	if cm.state != Leader {
+		return
+	}
 
-	parentModel, err := ReadParentModel()
+	parentModel, err := cm.ReadParentModel()
 	if err != nil {
 		log.Fatalln(err)
 	}
 
 	// リセット
+	cm.mu.Lock()
+	savedCurrentTerm := cm.currentTerm
 	cm.models = [][]byte{}
+	cm.mu.Unlock()
 
-	args := &SendParentModelArgs{
+	args := &ModelAggregationArgs{
 		Model: parentModel,
+		Term:  savedCurrentTerm,
 	}
 
 	wg := &sync.WaitGroup{}
@@ -809,9 +811,9 @@ func (cm *ConsensusModule) leaderSendModels() {
 		wg.Add(1)
 		go func(peerId int) {
 			cm.dlog("sending ParentModel to %v: args=%+v", peerId, args)
-			var reply SendParentModelReply
-			if err := cm.server.Call(peerId, "Federated.SendParentModel", args, &reply); err != nil {
-				cm.dlog("SendParentModel failed to %v: %v", peerId, err)
+			var reply ModelAggregationReply
+			if err := cm.server.Call(peerId, "Federated.ModelAggregation", args, &reply); err != nil {
+				cm.dlog("ModelAggregation failed to %v: %v", peerId, err)
 			}
 			if cm.state != Leader {
 				cm.dlog("while waiting for reply, state = %v", cm.state)
@@ -819,7 +821,7 @@ func (cm *ConsensusModule) leaderSendModels() {
 			}
 
 			if reply.Term != savedCurrentTerm {
-				cm.dlog("term out of date in SendParentModel")
+				cm.dlog("term out of date in ModelAggregation")
 				return
 			}
 
@@ -890,6 +892,16 @@ func (cm *ConsensusModule) ReadAggregatedModel() ([]byte, error) {
 // leaderSendAEs sends a round of AEs to all peers, collects their
 // replies and adjusts cm's state.
 func (cm *ConsensusModule) leaderSendAEs() {
+	/*
+		cm.mu.Lock()
+		if !cm.server.battery.Enough() {
+			cm.dlog("Battery is not enough")
+			cm.becomeFollower(cm.currentTerm)
+			cm.mu.Unlock()
+			return
+		}
+	*/
+
 	cm.mu.Lock()
 	savedCurrentTerm := cm.currentTerm
 	cm.mu.Unlock()
@@ -917,6 +929,7 @@ func (cm *ConsensusModule) leaderSendAEs() {
 			cm.dlog("sending AppendEntries to %v: ni=%d, args=%+v", peerId, ni, args)
 			var reply AppendEntriesReply
 			if err := cm.server.Call(peerId, "ConsensusModule.AppendEntries", args, &reply); err == nil {
+				cm.dlog("received append entries")
 				cm.mu.Lock()
 				defer cm.mu.Unlock()
 				// MEMO: heartbeat送って帰ってきたreplyのTermが最新の場合フォロワーに降格
@@ -980,7 +993,10 @@ func (cm *ConsensusModule) leaderSendAEs() {
 						cm.dlog("AppendEntries reply from %d !success: nextIndex := %d", peerId, ni-1)
 					}
 				}
+			} else {
+				cm.dlog("sending AppendEntries error: %v", err)
 			}
+
 		}(peerId)
 	}
 }
