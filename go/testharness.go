@@ -134,9 +134,6 @@ func NewHarness(t *testing.T, n int) *Harness {
 		}
 	}()
 
-	InitializePython()
-	SetPath()
-
 	for i := 0; i < n; i++ {
 		go h.collectCommits(i)
 	}
@@ -259,8 +256,6 @@ func (h *Harness) Shutdown() {
 		log.Printf("Failed to gracefully shutdown: %v", err)
 	}
 	h.srvWg.Wait()
-
-	FinalizePython()
 }
 
 // DisconnectPeer disconnects a server from all other servers in the cluster.

@@ -3,7 +3,6 @@
 package raft
 
 import (
-	"os"
 	"testing"
 	"time"
 
@@ -612,22 +611,6 @@ func TestFLonRaft(t *testing.T) {
 	defer h.Shutdown()
 
 	sleepMs(60_000)
-}
-
-// 手動でFLを実行(Raftを使わない)
-func TestFLManually(t *testing.T) {
-	// 初期化
-	modelPath := "parent.model"
-	_, err := os.Stat(modelPath)
-	if !os.IsNotExist(err) {
-		if r := os.Remove(modelPath); r != nil {
-			t.Fatal(r)
-		}
-	}
-
-	if !ExecFLManually() {
-		t.Fatal("initial_learn() in aggregator.py failed")
-	}
 }
 
 func TestCrashAfterSubmit(t *testing.T) {
