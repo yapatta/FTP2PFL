@@ -685,11 +685,17 @@ func ReadParentModel() ([]byte, error) {
 	// return ReadModel(ParentModelFile)
 }
 
-func ReadClientModel(id int) ([]byte, error) {
+func ReadClientModel(id int, m []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://0.0.0.0:9000/clients/%v", id), http.NoBody)
+	model := map[string][]byte{"model": m}
+	jsonStr, err := json.Marshal(model)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://0.0.0.0:9000/clients/%v", id), bytes.NewBuffer(jsonStr))
 	if err != nil {
 		return nil, err
 	}
@@ -716,6 +722,7 @@ func ReadClientModel(id int) ([]byte, error) {
 
 type SendParentModelArgs struct {
 	Model []byte
+	Term  int
 }
 
 func (sma SendParentModelArgs) String() string {
@@ -724,6 +731,7 @@ func (sma SendParentModelArgs) String() string {
 
 type SendParentModelReply struct {
 	Success     bool
+	Term        int
 	ClientModel []byte
 }
 
@@ -756,17 +764,34 @@ func (cm *ConsensusModule) SendParentModel(args SendParentModelArgs, reply *Send
 		}
 	*/
 
-	m, err := ReadClientModel(cm.id)
-	if err != nil {
-		return err
+	reply.Success = false
+	if args.Term == cm.currentTerm {
+		// 現在のタームが同じで自身がフォロワーじゃない場合フォロワーになる
+		if cm.state != Follower {
+			return nil
+		}
+
+		m, err := ReadClientModel(cm.id, args.Model)
+		if err != nil {
+			return err
+		}
+
+		reply.Success = true
+		reply.ClientModel = m
+		reply.Term = cm.currentTerm
 	}
 
-	reply.Success = true
-	reply.ClientModel = m
+	cm.persistToStorage()
+	cm.dlog("SendParentModel reply: %+v", *reply)
+
 	return nil
 }
 
 func (cm *ConsensusModule) leaderSendModels() {
+	cm.mu.Lock()
+	savedCurrentTerm := cm.currentTerm
+	cm.mu.Unlock()
+
 	parentModel, err := ReadParentModel()
 	if err != nil {
 		log.Fatalln(err)
@@ -788,11 +813,22 @@ func (cm *ConsensusModule) leaderSendModels() {
 			if err := cm.server.Call(peerId, "Federated.SendParentModel", args, &reply); err != nil {
 				cm.dlog("SendParentModel failed to %v: %v", peerId, err)
 			}
+			if cm.state != Leader {
+				cm.dlog("while waiting for reply, state = %v", cm.state)
+				return
+			}
+
+			if reply.Term != savedCurrentTerm {
+				cm.dlog("term out of date in SendParentModel")
+				return
+			}
+
 			if reply.Success {
 				cm.mu.Lock()
 				cm.models = append(cm.models, reply.ClientModel)
 				cm.mu.Unlock()
 			}
+
 			wg.Done()
 		}(peerId)
 	}
