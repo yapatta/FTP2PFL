@@ -111,9 +111,9 @@ def aggregate(bmodels: List[ByteString]) -> List[np.ndarray]:
     fws = []
     lws = []
 
-    cliant_models = load_cliant_models()
+    # client_models = load_cliant_models()
 
-    for weights in cliant_models:
+    for weights in client_models:
         fw = weights[0]
         lw = weights[1]
         fws.append(fw)
@@ -155,6 +155,6 @@ def initial_learn() -> List[np.ndarray]:
         validation_data=ds_test,
     )
 
-    save_aggregated_weights(model.layers[1].get_weights())
+    # save_aggregated_weights(model.layers[1].get_weights())
 
     return model.layers[1].get_weights()

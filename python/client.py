@@ -51,20 +51,6 @@ def fetch_train_test_data():
     return ds_train, ds_test
 
 
-model = tf.keras.models.Sequential([
-    tf.keras.layers.Flatten(input_shape=(28, 28)),
-    tf.keras.layers.Dense(10, activation='relu'),
-    tf.keras.layers.Softmax()
-    # tf.keras.layers.Dense(1, activation='softmax')
-])
-model.summary()
-model.compile(
-    optimizer=tf.keras.optimizers.Adam(0.001),
-    loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-    metrics=[tf.keras.metrics.SparseCategoricalAccuracy()],
-)
-
-
 def bytes_to_model(fn: str) -> List[np.ndarray]:
     if not os.path.isfile(fn):
         return list()
@@ -96,6 +82,17 @@ def save_client_weights(weights: List[np.ndarray], id: int):
 
 
 def learn(id: int, bmodel: ByteString) -> List[np.ndarray]:
+    model = tf.keras.models.Sequential([
+        tf.keras.layers.Flatten(input_shape=(28, 28)),
+        tf.keras.layers.Dense(10, activation='relu'),
+        tf.keras.layers.Softmax()
+    ])
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(0.001),
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+        metrics=[tf.keras.metrics.SparseCategoricalAccuracy()],
+    )
+
     pw = bytes2model(bmodel)
     model.layers[1].set_weights(pw)
 
