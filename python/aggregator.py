@@ -1,8 +1,8 @@
 import tensorflow as tf
 import tensorflow_datasets as tfds
 import numpy as np
-from typing import List, ByteString
 import os
+from typing import List, Tuple
 
 CLIANT_NUM = 6
 EPOCHS = 20
@@ -41,7 +41,7 @@ def fetch_train_test_data():
     return ds_train, ds_test
 
 
-def bytes2model(wb_all: ByteString) -> List[np.ndarray]:
+def bytes2model(wb_all: bytes) -> List[np.ndarray]:
     fw = np.frombuffer(wb_all[:31360], dtype=np.dtype(
         'float32'), count=-1, offset=0).reshape(784, 10)
     lw = np.frombuffer(wb_all[-40:], dtype=np.dtype(
@@ -59,7 +59,7 @@ def bytefile_to_model(fn: str) -> List[np.ndarray]:
         return bytes2model(wb_all)
 
 
-def bmodels2weights(bmodels: List[ByteString]) -> List[List[np.ndarray]]:
+def bmodels2weights(bmodels: List[bytes]) -> List[List[np.ndarray]]:
     models = []
     for bmodel in bmodels:
         model = bytes2model(bmodel)
@@ -105,7 +105,7 @@ def save_aggregated_weights(weights: List[np.ndarray]):
         f.write(wb_all)
 
 
-def aggregate(bmodels: List[ByteString]) -> List[np.ndarray]:
+def aggregate(bmodels: List[bytes]) -> Tuple[List[np.ndarray], str, str]:
     client_models = bmodels2weights(bmodels)
 
     fws = []
@@ -122,32 +122,40 @@ def aggregate(bmodels: List[ByteString]) -> List[np.ndarray]:
     fw_average = sum(fws) / float(len(fws))
     lw_average = sum(lws) / float(len(lws))
 
-    ret = [fw_average, lw_average]
-    save_aggregated_weights(ret)
 
-    return ret
+    ret = [fw_average, lw_average]
+    # save_aggregated_weights(ret)
+
+    model = create_model()
+    model.layers[1].set_weights(ret)
+    _, ds_test = fetch_train_test_data()
+    loss, acc = model.evaluate(ds_test, verbose=2)
+    loss_str = str(loss)
+    acc_str = "{:5.2f}".format(100*acc)
+
+    return (ret, loss_str, acc_str)
 
 
 def load_parent_model() -> List[np.ndarray]:
     model = bytefile_to_model(MODEL_FILE)
     return model
 
+def create_model():
+    model = tf.keras.models.Sequential([
+        tf.keras.layers.Flatten(input_shape=(28, 28)),
+        tf.keras.layers.Dense(10, activation='relu'),
+        tf.keras.layers.Softmax()
+    ])
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(0.001),
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+        metrics=[tf.keras.metrics.SparseCategoricalAccuracy()],
+    )
 
-model = tf.keras.models.Sequential([
-    tf.keras.layers.Flatten(input_shape=(28, 28)),
-    tf.keras.layers.Dense(10, activation='relu'),
-    tf.keras.layers.Softmax()
-    # tf.keras.layers.Dense(1, activation='softmax')
-])
-model.summary()
-model.compile(
-    optimizer=tf.keras.optimizers.Adam(0.001),
-    loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-    metrics=[tf.keras.metrics.SparseCategoricalAccuracy()],
-)
+    return model
 
-
-def initial_learn() -> List[np.ndarray]:
+def initial_learn() -> Tuple[List[np.ndarray], str, str]:
+    model = create_model()
     ds_train, ds_test = fetch_train_test_data()
     model.fit(
         ds_train,
@@ -155,6 +163,10 @@ def initial_learn() -> List[np.ndarray]:
         validation_data=ds_test,
     )
 
+    loss, acc = model.evaluate(ds_test, verbose=2)
+    loss_str = str(loss)
+    acc_str = "{:5.2f}".format(100*acc)
+
     # save_aggregated_weights(model.layers[1].get_weights())
 
-    return model.layers[1].get_weights()
+    return (model.layers[1].get_weights(), loss_str, acc_str)

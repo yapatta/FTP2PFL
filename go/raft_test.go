@@ -199,29 +199,35 @@ func TestSubmitNonLeaderFails(t *testing.T) {
 	sleepMs(10)
 }
 
-func TestFederatedLearning(t *testing.T) {
+func TestFLCrashLeader(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
 
 	h := NewHarness(t, 5)
 	defer h.Shutdown()
 
 	// Submit a couple of values to a fully connected cluster.
-	sleepMs(50_000)
-	//origLeaderId, _ := h.CheckSingleLeader()
-	//dPeerId := (origLeaderId + 1) % 3
-	//h.DisconnectPeer(dPeerId)
-	// sleepMs(8_000)
+	sleepMs(20_000)
+	origLeaderId, _ := h.CheckSingleLeader()
+	h.DisconnectPeer(origLeaderId)
+	sleepMs(20_000)
+	h.ReconnectPeer(origLeaderId)
+	sleepMs(20_000)
+}
 
-	// Submit a new command; it will be committed but only to two servers.
-	// h.CheckModelCommittedN(7, 2)
+func TestFLCrashFollower(t *testing.T) {
+	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
 
-	// Now reconnect dPeerId and wait a bit; it should find the new command too.
-	//h.ReconnectPeer(dPeerId)
-	// sleepMs(30_000)
-	// h.CheckSingleLeader()
+	h := NewHarness(t, 5)
+	defer h.Shutdown()
 
-	// sleepMs(6_000)
-	// h.CheckCommittedN(7, 3)
+	// Submit a couple of values to a fully connected cluster.
+	sleepMs(20_000)
+	origLeaderId, _ := h.CheckSingleLeader()
+	dPeerId := (origLeaderId + 1) % 3
+	h.DisconnectPeer(dPeerId)
+	sleepMs(20_000)
+	h.ReconnectPeer(dPeerId)
+	sleepMs(20_000)
 }
 
 func TestCommitMultipleCommands(t *testing.T) {
@@ -420,24 +426,6 @@ func TestCommitsWithLeaderDisconnects(t *testing.T) {
 	h.CheckNotCommitted(7)
 }
 
-func TestCrashFollower(t *testing.T) {
-	// Basic test to verify that crashing a peer doesn't blow up.
-	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
-
-	h := NewHarness(t, 3)
-	defer h.Shutdown()
-
-	origLeaderId, _ := h.CheckSingleLeader()
-	h.SubmitToServer(origLeaderId, 5)
-
-	sleepMs(350)
-	h.CheckCommittedN(5, 3)
-
-	h.CrashPeer((origLeaderId + 1) % 3)
-	sleepMs(350)
-	h.CheckCommittedN(5, 2)
-}
-
 func TestCrashThenRestartFollower(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
 
@@ -610,7 +598,7 @@ func TestFLonRaft(t *testing.T) {
 	h := NewHarness(t, 3)
 	defer h.Shutdown()
 
-	sleepMs(60_000)
+	sleepMs(40_000)
 }
 
 func TestCrashAfterSubmit(t *testing.T) {

@@ -19,5 +19,6 @@ venv/
 go/*.html
 go/*.log
 go/*.model
+go/data/
 python/*.model
 

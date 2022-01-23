@@ -23,7 +23,12 @@ import (
 )
 
 const DebugCM = 1
-const ParentModelFile = "parent.model"
+
+type Upload struct {
+	Model    []byte `json:"model"`
+	Loss     string `json:"loss"`
+	Accuracy string `json:"acc"`
+}
 
 // CommitEntry is the data reported by Raft to the commit channel. Each commit
 // entry notifies the client that consensus was reached on a command and it can
@@ -479,7 +484,7 @@ func (cm *ConsensusModule) runElectionTimer() {
 
 		// Start an election if we haven't heard from a leader or haven't voted for
 		// someone for the duration of the timeout.
-		if elapsed := time.Since(cm.electionResetEvent); elapsed >= timeoutDuration && cm.server.battery.Enough() {
+		if elapsed := time.Since(cm.electionResetEvent); elapsed >= timeoutDuration && cm.BatteryEnough() {
 			cm.startElection()
 			cm.mu.Unlock()
 			return
@@ -653,7 +658,6 @@ func (cm *ConsensusModule) startLeader() {
 			}
 		}
 	}(50 * time.Millisecond)
-
 }
 
 func (cm *ConsensusModule) ReadParentModel() ([]byte, error) {
@@ -697,6 +701,8 @@ func (cm *ConsensusModule) ReadParentModel() ([]byte, error) {
 		return nil, err
 	}
 
+	cm.dlog("parent model accuracy: %v, loss: %v", u.Accuracy, u.Loss)
+
 	return u.Model, nil
 }
 
@@ -731,6 +737,8 @@ func (cm *ConsensusModule) ReadClientModel(m []byte) ([]byte, error) {
 	if err := json.Unmarshal(byteArray, &u); err != nil {
 		return nil, err
 	}
+
+	cm.dlog("client model accuracy: %v, loss: %v", u.Accuracy, u.Loss)
 
 	return u.Model, nil
 }
@@ -895,6 +903,9 @@ func (cm *ConsensusModule) ReadAggregatedModel() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	cm.dlog("aggregated model accuracy: %v, loss: %v", u.Accuracy, u.Loss)
+
 	return u.Model, nil
 }
 
@@ -1048,6 +1059,10 @@ func (cm *ConsensusModule) commitChanSender() {
 		}
 	}
 	cm.dlog("commitChanSender done")
+}
+
+func (cm *ConsensusModule) BatteryEnough() bool {
+	return cm.server.BatteryEnough()
 }
 
 func intMin(a, b int) int {

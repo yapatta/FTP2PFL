@@ -3,7 +3,7 @@ import tensorflow_datasets as tfds
 import numpy as np
 import sys
 import os
-from typing import List, ByteString
+from typing import List, Tuple
 
 MODEL_FILE = "client{}.model"
 PARENT_MODEL_FILE = "parent.model"
@@ -12,7 +12,7 @@ EPOCHS = 10
 # for test
 # os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
-def bytes2model(wb_all: ByteString) -> List[np.ndarray]:
+def bytes2model(wb_all: bytes) -> List[np.ndarray]:
     fw = np.frombuffer(wb_all[:31360], dtype=np.dtype(
         'float32'), count=-1, offset=0).reshape(784, 10)
     lw = np.frombuffer(wb_all[-40:], dtype=np.dtype(
@@ -80,8 +80,7 @@ def save_client_weights(weights: List[np.ndarray], id: int):
     with open(MODEL_FILE.format(id), 'wb') as f:
         f.write(wb_all)
 
-
-def learn(id: int, bmodel: ByteString) -> List[np.ndarray]:
+def create_model():
     model = tf.keras.models.Sequential([
         tf.keras.layers.Flatten(input_shape=(28, 28)),
         tf.keras.layers.Dense(10, activation='relu'),
@@ -93,7 +92,12 @@ def learn(id: int, bmodel: ByteString) -> List[np.ndarray]:
         metrics=[tf.keras.metrics.SparseCategoricalAccuracy()],
     )
 
-    pw = bytes2model(bmodel)
+    return model
+
+def learn(id: int, bweights: bytes) -> Tuple[List[np.ndarray], str, str]:
+    model = create_model()
+
+    pw = bytes2model(bweights)
     model.layers[1].set_weights(pw)
 
     ds_train, ds_test = fetch_train_test_data()
@@ -103,8 +107,8 @@ def learn(id: int, bmodel: ByteString) -> List[np.ndarray]:
         validation_data=ds_test,
     )
 
-    weights = model.layers[1].get_weights()
+    loss, acc = model.evaluate(ds_test, verbose=2)
+    loss_str = str(loss)
+    acc_str = "{:5.2f}".format(100*acc)
 
-    # save_client_weights(weights, id)
-
-    return weights
+    return (model.layers[1].get_weights(), loss_str, acc_str)

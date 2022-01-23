@@ -103,6 +103,10 @@ func (s *Server) Serve() {
 	}()
 }
 
+func (s *Server) BatteryEnough() bool {
+	return s.battery.Enough()
+}
+
 // DisconnectAll closes all the client connections to peers for this server.
 func (s *Server) DisconnectAll() {
 	s.mu.Lock()

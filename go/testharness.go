@@ -17,10 +17,6 @@ import (
 const ModelSize = 784 * 4
 const LastModelSize = 10 * 4
 
-type Upload struct {
-	Model []byte `json:"model"`
-}
-
 func init() {
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
 	seed := time.Now().UnixNano()

@@ -21,19 +21,18 @@ def create_app(test_config=None):
         bmodel = base64.b64decode((model.encode()))
 
         client_id = int(client_id)
-        weights = client.learn(client_id, bmodel)
+        weights, loss, acc = client.learn(client_id, bmodel)
         buf = ag.byte_weights(weights)
-        print("already response: {}".format(client_id))
-        return jsonify({'model': base64.b64encode(buf).decode('utf-8')}), 200
+        return jsonify({'model': base64.b64encode(buf).decode('utf-8'), 'loss': loss, 'acc': acc}), 200
 
     @app.route("/initial", methods=['GET'])
     @cross_origin(origin="*")
     def initial():
         # weights = ag.initial_learn() if not os.path.exists(
         #    ag.MODEL_FILE) else ag.load_parent_model()
-        weights = ag.initial_learn()
+        weights, loss, acc = ag.initial_learn()
         buf = ag.byte_weights(weights)
-        return jsonify({'model': base64.b64encode(buf).decode('utf-8')}), 200
+        return jsonify({'model': base64.b64encode(buf).decode('utf-8'), 'loss': loss, 'acc': acc}), 200
 
     @app.route("/aggregate", methods=['POST'])
     @cross_origin(origin="*")
@@ -42,10 +41,9 @@ def create_app(test_config=None):
         # バイト列のList
         bmodels = map(lambda m: base64.b64decode(
             (m.encode())), (json.loads(dumped_json))["models"])
-        weights = ag.aggregate(bmodels)
+        weights, loss, acc = ag.aggregate(bmodels)
         buf = ag.byte_weights(weights)
-        print("aggregate!!!!")
-        return jsonify({'model': base64.b64encode(buf).decode('utf-8')}), 200
+        return jsonify({'model': base64.b64encode(buf).decode('utf-8'), 'loss': loss, 'acc': acc}), 200
 
     return app
 
