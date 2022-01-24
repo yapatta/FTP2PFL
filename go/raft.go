@@ -30,6 +30,18 @@ type Upload struct {
 	Accuracy string `json:"acc"`
 }
 
+type ClientUpload struct {
+	Model    []byte `json:"model"`
+	Num      int    `json:"num"`
+	Loss     string `json:"loss"`
+	Accuracy string `json:"acc"`
+}
+
+type ModelParam struct {
+	Model []byte `json:"model"`
+	Num   int    `json:"num"`
+}
+
 // CommitEntry is the data reported by Raft to the commit channel. Each commit
 // entry notifies the client that consensus was reached on a command and it can
 // be applied to the client's state machine.
@@ -120,7 +132,7 @@ type ConsensusModule struct {
 	// こいつがAggregateのトリガー
 	triggerAggregateChan chan struct{}
 	// 今のラウンドのモデル
-	models [][]byte
+	models []ModelParam
 
 	// Persistent Raft state on all servers
 	currentTerm int
@@ -664,6 +676,7 @@ func (cm *ConsensusModule) ReadParentModel() ([]byte, error) {
 	cm.mu.Lock()
 	// savedCommitIndex := cm.commitIndex
 	savedLastLogIndex := len(cm.log) - 1
+
 	// 最新のコミットログを取得
 	if savedLastLogIndex >= 0 {
 		e := cm.log[savedLastLogIndex]
@@ -683,6 +696,7 @@ func (cm *ConsensusModule) ReadParentModel() ([]byte, error) {
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://0.0.0.0:9000/initial", http.NoBody)
+	cm.dlog("aggregated model accuracy: inital, loss: model")
 	if err != nil {
 		return nil, err
 	}
@@ -701,16 +715,14 @@ func (cm *ConsensusModule) ReadParentModel() ([]byte, error) {
 		return nil, err
 	}
 
-	cm.dlog("parent model accuracy: %v, loss: %v", u.Accuracy, u.Loss)
-
 	return u.Model, nil
 }
 
-func (cm *ConsensusModule) ReadClientModel(m []byte) ([]byte, error) {
+func (cm *ConsensusModule) ReadClientModel(m []byte) ([]byte, int, error) {
 	model := map[string][]byte{"model": m}
 	jsonStr, err := json.Marshal(model)
 	if err != nil {
-		return nil, err
+		return nil, -1, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
@@ -718,29 +730,29 @@ func (cm *ConsensusModule) ReadClientModel(m []byte) ([]byte, error) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://0.0.0.0:9000/clients/%v", cm.id), bytes.NewBuffer(jsonStr))
 	if err != nil {
-		return nil, err
+		return nil, -1, err
 	}
 	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, -1, err
 	}
 	defer res.Body.Close()
 
 	byteArray, err := io.ReadAll(res.Body)
 	if err != nil {
-		return nil, err
+		return nil, -1, err
 	}
 
-	var u Upload
+	var u ClientUpload
 	if err := json.Unmarshal(byteArray, &u); err != nil {
-		return nil, err
+		return nil, -1, err
 	}
 
-	cm.dlog("client model accuracy: %v, loss: %v", u.Accuracy, u.Loss)
+	cm.dlog("client model accuracy: %v(n=%v), loss: %v", u.Accuracy, u.Num, u.Loss)
 
-	return u.Model, nil
+	return u.Model, u.Num, nil
 }
 
 type ModelAggregationArgs struct {
@@ -756,6 +768,7 @@ type ModelAggregationReply struct {
 	Success     bool
 	Term        int
 	ClientModel []byte
+	DataNum     int
 }
 
 func (mar ModelAggregationReply) String() string {
@@ -781,13 +794,14 @@ func (cm *ConsensusModule) ModelAggregation(args ModelAggregationArgs, reply *Mo
 		}
 
 		// FIXME: レスポンス自体は受け取っている
-		m, err := cm.ReadClientModel(args.Model)
+		m, n, err := cm.ReadClientModel(args.Model)
 		if err != nil {
 			return err
 		}
 
 		reply.Success = true
 		reply.ClientModel = m
+		reply.DataNum = n
 		reply.Term = currentTerm
 	}
 
@@ -809,7 +823,7 @@ func (cm *ConsensusModule) leaderSendModels() {
 	// リセット
 	cm.mu.Lock()
 	savedCurrentTerm := cm.currentTerm
-	cm.models = [][]byte{}
+	cm.models = []ModelParam{}
 	cm.mu.Unlock()
 
 	args := &ModelAggregationArgs{
@@ -842,7 +856,7 @@ func (cm *ConsensusModule) leaderSendModels() {
 
 			if reply.Success {
 				cm.mu.Lock()
-				cm.models = append(cm.models, reply.ClientModel)
+				cm.models = append(cm.models, ModelParam{Model: reply.ClientModel, Num: reply.DataNum})
 				successCount++
 				cm.mu.Unlock()
 			}
@@ -868,7 +882,7 @@ func (cm *ConsensusModule) leaderSendModels() {
 
 func (cm *ConsensusModule) ReadAggregatedModel() ([]byte, error) {
 	cm.mu.Lock()
-	models := map[string][][]byte{"models": cm.models}
+	models := map[string][]ModelParam{"models": cm.models}
 	jsonStr, err := json.Marshal(models)
 	if err != nil {
 		return nil, err
@@ -879,7 +893,7 @@ func (cm *ConsensusModule) ReadAggregatedModel() ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://0.0.0.0:9000/aggregate", bytes.NewBuffer(jsonStr))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://0.0.0.0:9000/aggregate/%v", cm.id), bytes.NewBuffer(jsonStr))
 	if err != nil {
 		return nil, err
 	}

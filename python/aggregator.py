@@ -1,14 +1,14 @@
 import tensorflow as tf
 import tensorflow_datasets as tfds
+import tensorflow_federated as tff
 import numpy as np
 import os
+from  functools import reduce
 from typing import List, Tuple
 
-CLIANT_NUM = 6
-EPOCHS = 20
-MODEL_FILE = "parent.model"
-CLIANT_MODEL_FILES = ["client{}.model".format(i) for i in range(CLIANT_NUM)]
+import client
 
+EPOCHS = 20
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
 
@@ -50,31 +50,10 @@ def bytes2model(wb_all: bytes) -> List[np.ndarray]:
     return ret
 
 
-def bytefile_to_model(fn: str) -> List[np.ndarray]:
-    if not os.path.isfile(fn):
-        return list()
-
-    with open(fn, 'rb') as f:
-        wb_all = f.read()
-        return bytes2model(wb_all)
-
-
 def bmodels2weights(bmodels: List[bytes]) -> List[List[np.ndarray]]:
     models = []
     for bmodel in bmodels:
         model = bytes2model(bmodel)
-        if len(model) == 0:
-            continue
-        models.append(model)
-
-    return models
-
-
-# クライアントのモデル, 存在する場合のみ増やす
-def load_cliant_models() -> List[List[np.ndarray]]:
-    models = []
-    for mf in CLIANT_MODEL_FILES:
-        model = bytefile_to_model(mf)
         if len(model) == 0:
             continue
         models.append(model)
@@ -93,80 +72,79 @@ def byte_weights(weights: List[np.ndarray]):
     return wb_all
 
 
-def save_aggregated_weights(weights: List[np.ndarray]):
-    # (784, 10)
-    fwb = weights[0].tobytes()
-    # (10, )
-    lwb = weights[1].tobytes()
-
-    wb_all = fwb + lwb
-
-    with open(MODEL_FILE, 'wb') as f:
-        f.write(wb_all)
-
-
-def aggregate(bmodels: List[bytes]) -> Tuple[List[np.ndarray], str, str]:
-    client_models = bmodels2weights(bmodels)
-
-    fws = []
-    lws = []
-
-    # client_models = load_cliant_models()
-
-    for weights in client_models:
-        fw = weights[0]
-        lw = weights[1]
-        fws.append(fw)
-        lws.append(lw)
-
-    fw_average = sum(fws) / float(len(fws))
-    lw_average = sum(lws) / float(len(lws))
-
-
-    ret = [fw_average, lw_average]
-    # save_aggregated_weights(ret)
-
-    model = create_model()
-    model.layers[1].set_weights(ret)
-    _, ds_test = fetch_train_test_data()
-    loss, acc = model.evaluate(ds_test, verbose=2)
-    loss_str = str(loss)
-    acc_str = "{:5.2f}".format(100*acc)
-
-    return (ret, loss_str, acc_str)
-
-
-def load_parent_model() -> List[np.ndarray]:
-    model = bytefile_to_model(MODEL_FILE)
-    return model
-
 def create_model():
     model = tf.keras.models.Sequential([
         tf.keras.layers.Flatten(input_shape=(28, 28)),
-        tf.keras.layers.Dense(10, activation='relu'),
+        #tf.keras.layers.Dense(10, activation='relu'),
+        tf.keras.layers.Dense(10, kernel_initializer='zeros'),
         tf.keras.layers.Softmax()
     ])
     model.compile(
-        optimizer=tf.keras.optimizers.Adam(0.001),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+        #optimizer=tf.keras.optimizers.Adam(0.001),
+        optimizer=tf.keras.optimizers.SGD(learning_rate=1.0),
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(),
         metrics=[tf.keras.metrics.SparseCategoricalAccuracy()],
     )
 
     return model
 
-def initial_learn() -> Tuple[List[np.ndarray], str, str]:
-    model = create_model()
-    ds_train, ds_test = fetch_train_test_data()
-    model.fit(
-        ds_train,
-        epochs=EPOCHS,
-        validation_data=ds_test,
-    )
 
-    loss, acc = model.evaluate(ds_test, verbose=2)
+# API
+def aggregate(leader_id: int, bmodels: List[bytes], nums: List[int]) -> Tuple[List[np.ndarray], str, str]:
+    client_models = bmodels2weights(bmodels)
+
+    fws = []
+    lws = []
+    for (weights, n) in zip(client_models, nums):
+        fw = weights[0]
+        lw = weights[1]
+        fws.append(fw * n)
+        lws.append(lw * n)
+
+    fw_average = sum(fws) / float(sum(nums))
+    lw_average = sum(lws) / float(sum(nums))
+
+
+    aggregated = [fw_average, lw_average]
+
+    """
+    loss = 0
+    acc = 0
+    datanum = 0
+    for i, test_data in enumerate(client.federated_test_data):
+        if i == leader_id:
+            continue
+
+        datasize = len(list(test_data))
+        l, a = model.evaluate(test_data, verbose=2)
+        loss += l * datasize
+        acc += a * datasize
+        datanum += datasize
+    
+    loss = loss / float(datanum)
+    acc = acc /float(datanum)
+    """
+
+    model = create_model()
+    model.layers[1].set_weights(aggregated)
+    federated_test_data = client.create_federated_test_data()
+
+    if leader_id == 0:
+        dataset_sum = reduce(lambda x,y: x.concatenate(y), federated_test_data[leader_id+1:])
+    else:
+        dataset_sum = reduce(lambda x,y: x.concatenate(y), federated_test_data[:leader_id])
+        dataset_sum = reduce(lambda x,y: x.concatenate(y), federated_test_data[leader_id+1:], dataset_sum)
+
+    loss, acc = model.evaluate(dataset_sum, verbose=2)
+
     loss_str = str(loss)
     acc_str = "{:5.2f}".format(100*acc)
 
-    # save_aggregated_weights(model.layers[1].get_weights())
 
-    return (model.layers[1].get_weights(), loss_str, acc_str)
+    return (aggregated, loss_str, acc_str)
+
+
+def initial_learn() -> List[np.ndarray]:
+    ret_weights = [np.random.normal(loc=0.0, scale=0.1, size=(784, 10)).astype(np.float32), np.random.normal(loc=0.0, scale=0.1, size=(10)).astype(np.float32)] 
+    # ret_weights = [np.zeros((784, 10), dtype=np.float32), np.zeros((10), dtype=np.float32)]
+    return ret_weights

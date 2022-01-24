@@ -3,6 +3,9 @@
 package raft
 
 import (
+	"fmt"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -592,13 +595,26 @@ func TestReplaceMultipleLogEntries(t *testing.T) {
 	h.CheckCommittedN(10, 3)
 }
 
-func TestFLonRaft(t *testing.T) {
+func TestFLBasic(t *testing.T) {
+	N := 5
+	SEC := 1
+
+	if cn := os.Getenv("CLIENT_NUM"); cn != "" {
+		N, _ = strconv.Atoi(cn)
+	}
+
+	if sec := os.Getenv("SEC"); sec != "" {
+		SEC, _ = strconv.Atoi(sec)
+	}
+
+	fmt.Printf("%v, %v\n", N, SEC)
+
 	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
 
-	h := NewHarness(t, 3)
+	h := NewHarness(t, N)
 	defer h.Shutdown()
 
-	sleepMs(40_000)
+	sleepMs(SEC * 1000)
 }
 
 func TestCrashAfterSubmit(t *testing.T) {

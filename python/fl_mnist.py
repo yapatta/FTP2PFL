@@ -1,11 +1,4 @@
 import collections
-import socket
-import requests
-import urllib3
-from requests.exceptions import Timeout
-from http.client import RemoteDisconnected
-from urllib3.util import Retry
-from requests.adapters import HTTPAdapter
 
 import json
 import base64
@@ -19,12 +12,10 @@ import tensorflow_federated as tff
 from matplotlib import pyplot as plt
 
 NUM_CLIENTS = 6
-NUM_EPOCHS = 5
+NUM_EPOCHS = 20
 BATCH_SIZE = 20
 SHUFFLE_BUFFER = 100
 PREFETCH_BUFFER = 10
-M_SIZE = 3136
-LM_SIZE = 40
 
 
 def preprocess(dataset):
@@ -74,17 +65,110 @@ def model_fn():
         metrics=[tf.keras.metrics.SparseCategoricalAccuracy()])
 
 
+MnistVariables = collections.namedtuple(
+    'MnistVariables', 'weights bias num_examples loss_sum accuracy_sum')
+
+def create_mnist_variables():
+  return MnistVariables(
+      weights=tf.Variable(
+          lambda: tf.zeros(dtype=tf.float32, shape=(784, 10)),
+          name='weights',
+          trainable=True),
+      bias=tf.Variable(
+          lambda: tf.zeros(dtype=tf.float32, shape=(10)),
+          name='bias',
+          trainable=True),
+      num_examples=tf.Variable(0.0, name='num_examples', trainable=False),
+      loss_sum=tf.Variable(0.0, name='loss_sum', trainable=False),
+      accuracy_sum=tf.Variable(0.0, name='accuracy_sum', trainable=False))
+
+def mnist_forward_pass(variables, batch):
+  y = tf.nn.softmax(tf.matmul(batch['x'], variables.weights) + variables.bias)
+  predictions = tf.cast(tf.argmax(y, 1), tf.int32)
+
+  flat_labels = tf.reshape(batch['y'], [-1])
+  loss = -tf.reduce_mean(
+      tf.reduce_sum(tf.one_hot(flat_labels, 10) * tf.math.log(y), axis=[1]))
+  accuracy = tf.reduce_mean(
+      tf.cast(tf.equal(predictions, flat_labels), tf.float32))
+
+  num_examples = tf.cast(tf.size(batch['y']), tf.float32)
+
+  variables.num_examples.assign_add(num_examples)
+  variables.loss_sum.assign_add(loss * num_examples)
+  variables.accuracy_sum.assign_add(accuracy * num_examples)
+
+  return loss, predictions
+
+def get_local_mnist_metrics(variables):
+  return collections.OrderedDict(
+      num_examples=variables.num_examples,
+      loss=variables.loss_sum / variables.num_examples,
+      accuracy=variables.accuracy_sum / variables.num_examples)
+
+@tff.federated_computation
+def aggregate_mnist_metrics_across_clients(metrics):
+  return collections.OrderedDict(
+      num_examples=tff.federated_sum(metrics.num_examples),
+      loss=tff.federated_mean(metrics.loss, metrics.num_examples),
+      accuracy=tff.federated_mean(metrics.accuracy, metrics.num_examples))
+
+class MnistModel(tff.learning.Model):
+
+  def __init__(self):
+    self._variables = create_mnist_variables()
+
+  @property
+  def trainable_variables(self):
+    return [self._variables.weights, self._variables.bias]
+
+  @property
+  def non_trainable_variables(self):
+    return []
+
+  @property
+  def local_variables(self):
+    return [
+        self._variables.num_examples, self._variables.loss_sum,
+        self._variables.accuracy_sum
+    ]
+
+  @property
+  def input_spec(self):
+    return collections.OrderedDict(
+        x=tf.TensorSpec([None, 784], tf.float32),
+        y=tf.TensorSpec([None, 1], tf.int32))
+
+  @tf.function
+  def forward_pass(self, batch, training=True):
+    del training
+    loss, predictions = mnist_forward_pass(self._variables, batch)
+    num_exmaples = tf.shape(batch['x'])[0]
+    return tff.learning.BatchOutput(
+        loss=loss, predictions=predictions, num_examples=num_exmaples)
+
+  @tf.function
+  def report_local_outputs(self):
+    return get_local_mnist_metrics(self._variables)
+
+  @property
+  def federated_output_computation(self):
+    return aggregate_mnist_metrics_across_clients
+
 def main():
     federated_train_data = make_federated_data(emnist_train, sample_clients)
-
-    print('Number of client datasets: {l}'.format(l=len(federated_train_data)))
-    print('First dataset: {d}'.format(d=federated_train_data[0]))
-
+    federated_test_data = make_federated_data(emnist_test, sample_clients)
+    """
     iterative_process = tff.learning.build_federated_averaging_process(
         model_fn,
         client_optimizer_fn=lambda: tf.keras.optimizers.SGD(
             learning_rate=0.02),
         server_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=1.0))
+    """
+
+    iterative_process = tff.learning.build_federated_averaging_process(
+        MnistModel,
+        client_optimizer_fn=lambda: tf.keras.optimizers.SGD(learning_rate=0.02))
 
     # @test {"skip": true}
     logdir = "/tmp/logs/scalars/training/"
@@ -93,77 +177,16 @@ def main():
     state = iterative_process.initialize()
 
     # N Roundで学習する
-    NUM_ROUNDS = 15
+    NUM_ROUNDS = 50
+    evaluation = tff.learning.build_federated_evaluation(MnistModel)
     for round_num in range(NUM_ROUNDS):
         state, metrics = iterative_process.next(state, federated_train_data)
-        # (784, 10)
-        fw_ori = state.model.trainable[0]
-        # 4bytes * 784 * 10= 31360
-        fwb_ori = fw_ori.tobytes()
+        # print('round {:2d}, metrics={}'.format(round_num + 1, metrics))
+        test_metrics = evaluation(state.model, federated_test_data)
+        print(test_metrics)
 
-        #  最終層 (10, 1)
-        lw_ori = state.model.trainable[1]
-        # print("weight:  {}".format(weights[0].shape))
-        lwb_ori = lw_ori.tobytes()
-
-        wb_all_ori = fwb_ori + lwb_ori
-
-        session = requests.Session()
-        retries = Retry(total=1,  # リトライ回数
-                        backoff_factor=1,  # sleep時間
-                        status_forcelist=[500, 502, 503, 504])
-        session.mount("http://", HTTPAdapter(max_retries=retries))
-
-        print('round {:2d}, metrics={}'.format(round_num + 1, metrics))
-        try:
-            headers = {'Content-type': "application/json"}
-            payload = {'model': base64.b64encode(wb_all_ori).decode('utf-8')}
-            r = session.post('http://localhost:8888/upload',
-                             data=json.dumps(payload), headers=headers, stream=True, timeout=(5.0, 5.0))
-            print(r)
-            # MEMO: Commitされる時間待つ
-            time.sleep(1)
-
-            # グローバルモデルを取り出す
-            r = session.get("http://localhost:8888/download",
-                            stream=True, timeout=(5.0, 5.0))
-            print(r)
-            res_data = r.json()
-            wb_all = base64.b64decode((res_data['model'].encode()))
-
-            # アップロードしたモデルとダウンロードしたモデル同じ
-            assert hashlib.sha256(wb_all).hexdigest(
-            ), hashlib.sha256(wb_all_ori).hexdigest()
-
-            fw = np.frombuffer(wb_all[:31360], dtype=np.dtype(
-                'float32'), count=-1, offset=0).reshape(784, 10)
-            lw = np.frombuffer(wb_all[-40:], dtype=np.dtype(
-                'float32'), count=-1, offset=0).reshape(10)
-
-            print(np.array_equal(fw_ori, fw), np.array_equal(lw_ori, lw))
-
-            # 保存された全体モデルを元に修正
-            state.model.trainable[0] = fw
-            state.model.trainable[1] = lw
-
-        except Exception:
-            continue
-
-        except requests.exceptions.ConnectionError:
-            continue
-
-        except urllib3.exceptions.ReadTimeoutError:
-            continue
-    # バイナリ化した重みを復元 -> len10のndarray
-    # np.frombuffer(weights, dtype=np.dtype('float32'), count=-1, offset=0)
-
-    # @test {"skip": true}
-# with summary_writer.as_default():
-#    for round_num in range(1, NUM_ROUNDS):
-#        state, metrics = iterative_process.next(state, federated_train_data)
-#        for name, value in metrics['train'].items():
-#            tf.summary.scalar(name, value, step=round_num)
 
 
 if __name__ == '__main__':
     main()
+

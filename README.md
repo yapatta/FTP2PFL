@@ -10,7 +10,7 @@ pip install -r requirements.txt
 ## Test
 
 ```go
-$ go test -v -race -run TestFederatedLearning |& tee /tmp/raftlog
+$ go test -v -race -run TestFLBasic |& tee /tmp/raftlog
 ... logging output
 ... test should PASS
 $ go run ./tools/raft-testlog-viz/main.go < /tmp/raftlog
