@@ -90,7 +90,7 @@ def create_model():
 
 
 # API
-def aggregate(leader_id: int, bmodels: List[bytes], nums: List[int]) -> Tuple[List[np.ndarray], str, str]:
+def aggregate(nodes_num: int, bmodels: List[bytes], nums: List[int]) -> Tuple[List[np.ndarray], str, str]:
     client_models = bmodels2weights(bmodels)
 
     fws = []
@@ -127,18 +127,21 @@ def aggregate(leader_id: int, bmodels: List[bytes], nums: List[int]) -> Tuple[Li
 
     model = create_model()
     model.layers[1].set_weights(aggregated)
-    federated_test_data = client.create_federated_test_data()
+    federated_test_data = client.create_federated_test_data(nodes_num)
+    dataset_sum = reduce(lambda x,y: x.concatenate(y), federated_test_data)
 
+    """
     if leader_id == 0:
         dataset_sum = reduce(lambda x,y: x.concatenate(y), federated_test_data[leader_id+1:])
     else:
         dataset_sum = reduce(lambda x,y: x.concatenate(y), federated_test_data[:leader_id])
         dataset_sum = reduce(lambda x,y: x.concatenate(y), federated_test_data[leader_id+1:], dataset_sum)
+    """
 
     loss, acc = model.evaluate(dataset_sum, verbose=2)
 
     loss_str = str(loss)
-    acc_str = "{:5.2f}".format(100*acc)
+    acc_str = "{:.4f}".format(100*acc)
 
 
     return (aggregated, loss_str, acc_str)

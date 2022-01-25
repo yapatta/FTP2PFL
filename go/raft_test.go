@@ -203,18 +203,31 @@ func TestSubmitNonLeaderFails(t *testing.T) {
 }
 
 func TestFLCrashLeader(t *testing.T) {
+	N := 5
+	SEC := 1
+
+	if cn := os.Getenv("CLIENT_NUM"); cn != "" {
+		N, _ = strconv.Atoi(cn)
+	}
+
+	if sec := os.Getenv("SEC"); sec != "" {
+		SEC, _ = strconv.Atoi(sec)
+	}
+
+	fmt.Printf("%v, %v\n", N, SEC)
+
 	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
 
-	h := NewHarness(t, 5)
+	h := NewHarness(t, N)
 	defer h.Shutdown()
 
 	// Submit a couple of values to a fully connected cluster.
-	sleepMs(20_000)
+	sleepMs(SEC * 1000)
 	origLeaderId, _ := h.CheckSingleLeader()
 	h.DisconnectPeer(origLeaderId)
-	sleepMs(20_000)
+	sleepMs(SEC * 1000)
 	h.ReconnectPeer(origLeaderId)
-	sleepMs(20_000)
+	sleepMs(SEC * 1000)
 }
 
 func TestFLCrashFollower(t *testing.T) {

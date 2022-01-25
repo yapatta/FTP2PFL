@@ -10,7 +10,7 @@ from typing import List, Tuple
 # for test
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
-NUM_CLIENTS = 6
+NUM_CLIENTS = 14
 NUM_EPOCHS = 20
 BATCH_SIZE = 20
 SHUFFLE_BUFFER = 100
@@ -116,8 +116,8 @@ def create_model():
 
     return model
 
-def create_federated_test_data():
-    return make_federated_data(emnist_test, sample_clients)
+def create_federated_test_data(l: int):
+    return make_federated_data(emnist_test, sample_clients[:l])
 
 def learn(id: int, bweights: bytes) -> Tuple[List[np.ndarray], int, str, str]:
     model = create_model()

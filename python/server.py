@@ -32,21 +32,21 @@ def create_app(test_config=None):
         buf = ag.byte_weights(weights)
         return jsonify({'model': base64.b64encode(buf).decode('utf-8')}), 200
 
-    @app.route("/aggregate/<leader_id>", methods=['POST'])
+    @app.route("/aggregate/<nodes_num>", methods=['POST'])
     @cross_origin(origin="*")
-    def aggregate(leader_id):
+    def aggregate(nodes_num):
         dumped_json = json.dumps(request.json)
         # バイト列のList
         bmodels_num = [ (base64.b64decode((params["model"].encode())), int(params["num"])) for params in (json.loads(dumped_json))["models"]]
         bmodels = [x[0] for x in bmodels_num]
         nums = [x[1] for x in bmodels_num]
 
-        leader_id = int(leader_id)
-        weights, loss, acc = ag.aggregate(leader_id, bmodels, nums)
+        nodes_num = int(nodes_num)
+        weights, loss, acc = ag.aggregate(nodes_num, bmodels, nums)
         buf = ag.byte_weights(weights)
         return jsonify({'model': base64.b64encode(buf).decode('utf-8'), 'loss': loss, 'acc': acc}), 200
 
     return app
 
 
-serve(create_app(), host='0.0.0.0', port=9000, threads=12)
+serve(create_app(), host='0.0.0.0', port=9000, threads=16)

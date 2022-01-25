@@ -793,7 +793,6 @@ func (cm *ConsensusModule) ModelAggregation(args ModelAggregationArgs, reply *Mo
 			return fmt.Errorf("ID: %v is not Follower", cm.id)
 		}
 
-		// FIXME: レスポンス自体は受け取っている
 		m, n, err := cm.ReadClientModel(args.Model)
 		if err != nil {
 			return err
@@ -832,7 +831,22 @@ func (cm *ConsensusModule) leaderSendModels() {
 	}
 
 	wg := &sync.WaitGroup{}
-	successCount := 1
+	successCount := 0
+
+	// myself
+	wg.Add(1)
+	go func(peerId int) {
+		defer wg.Done()
+		m, n, err := cm.ReadClientModel(args.Model)
+		if err != nil {
+			return
+		}
+		cm.mu.Lock()
+		cm.models = append(cm.models, ModelParam{Model: m, Num: n})
+		successCount++
+		cm.mu.Unlock()
+	}(cm.id)
+
 	for _, peerId := range cm.peerIds {
 		wg.Add(1)
 		go func(peerId int) {
@@ -893,7 +907,7 @@ func (cm *ConsensusModule) ReadAggregatedModel() ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://0.0.0.0:9000/aggregate/%v", cm.id), bytes.NewBuffer(jsonStr))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://0.0.0.0:9000/aggregate/%v", len(cm.peerIds)), bytes.NewBuffer(jsonStr))
 	if err != nil {
 		return nil, err
 	}
