@@ -65,7 +65,9 @@ func (s *Server) Serve() {
 	// to n.cm
 	s.rpcServer = rpc.NewServer()
 	s.rpcProxy = &RPCProxy{cm: s.cm}
+	// 階層を作る ex: ConsensusModule.RequestVote
 	s.rpcServer.RegisterName("ConsensusModule", s.rpcProxy)
+	s.rpcServer.RegisterName("Federated", s.rpcProxy)
 
 	var err error
 	s.listener, err = net.Listen("tcp", ":0") // ポート0で開くぜ
@@ -75,7 +77,7 @@ func (s *Server) Serve() {
 	log.Printf("[%v] listening at %s", s.serverId, s.listener.Addr())
 	s.mu.Unlock()
 
-	go s.battery.NormalAction()
+	go s.battery.NormalAction(s.serverId)
 
 	s.wg.Add(1)
 	go func() {
@@ -99,6 +101,10 @@ func (s *Server) Serve() {
 			}()
 		}
 	}()
+}
+
+func (s *Server) BatteryEnough() bool {
+	return s.battery.Enough()
 }
 
 // DisconnectAll closes all the client connections to peers for this server.
@@ -211,4 +217,8 @@ func (rpp *RPCProxy) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesR
 		time.Sleep(time.Duration(1+rand.Intn(5)) * time.Millisecond)
 	}
 	return rpp.cm.AppendEntries(args, reply)
+}
+
+func (rpp *RPCProxy) ModelAggregation(args ModelAggregationArgs, reply *ModelAggregationReply) error {
+	return rpp.cm.ModelAggregation(args, reply)
 }

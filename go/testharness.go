@@ -6,10 +6,9 @@ package raft
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"math/rand"
-	"net"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -32,8 +31,6 @@ type Harness struct {
 	cluster []*Server
 	storage []*MapStorage
 
-	listner   *net.TCPListener
-	sockClose chan interface{}
 	// commitChans has a channel per server in cluster with the commit channel for
 	// that server.
 	commitChans []chan CommitEntry
@@ -57,20 +54,6 @@ type Harness struct {
 	t *testing.T
 }
 
-func NewTCPSocket() (*net.TCPListener, error) {
-	tcpAddr, err := net.ResolveTCPAddr("tcp", ":8888")
-	if err != nil {
-		return nil, err
-	}
-
-	listener, err := net.ListenTCP("tcp", tcpAddr)
-	if err != nil {
-		return nil, err
-	}
-
-	return listener, nil
-}
-
 // NewHarness creates a new test Harness, initialized with n servers connected
 // to each other.
 func NewHarness(t *testing.T, n int) *Harness {
@@ -82,12 +65,6 @@ func NewHarness(t *testing.T, n int) *Harness {
 	ready := make(chan interface{})
 	storage := make([]*MapStorage, n)
 
-	// socket
-	sockClose := make(chan interface{})
-	listener, err := NewTCPSocket()
-	if err != nil {
-		log.Fatalln(err)
-	}
 	// Create all Servers in this cluster, assign ids and peer ids.
 	for i := 0; i < n; i++ {
 		peerIds := make([]int, 0)
@@ -122,15 +99,10 @@ func NewHarness(t *testing.T, n int) *Harness {
 		commitChans: commitChans,
 		commits:     commits,
 		connected:   connected,
-		sockClose:   sockClose,
-		listner:     listener,
 		alive:       alive,
 		n:           n,
 		t:           t,
 	}
-
-	// モデルを受け取る
-	go h.ReceiveModel()
 
 	for i := 0; i < n; i++ {
 		go h.collectCommits(i)
@@ -143,7 +115,9 @@ func NewHarness(t *testing.T, n int) *Harness {
 func (h *Harness) Shutdown() {
 	for i := 0; i < h.n; i++ {
 		h.cluster[i].DisconnectAll()
+		h.mu.Lock()
 		h.connected[i] = false
+		h.mu.Unlock()
 	}
 	for i := 0; i < h.n; i++ {
 		if h.alive[i] {
@@ -153,66 +127,6 @@ func (h *Harness) Shutdown() {
 	}
 	for i := 0; i < h.n; i++ {
 		close(h.commitChans[i])
-	}
-	close(h.sockClose)
-	h.listner.Close()
-}
-
-func (h *Harness) ReceiveModel() {
-	tlog("Model receiver starts")
-	conn, _ := h.listner.AcceptTCP()
-
-	for {
-		select {
-		case <-h.sockClose:
-			return
-		default:
-			h.HandleTCPConnection(conn)
-		}
-	}
-}
-
-func (h *Harness) HandleTCPConnection(conn *net.TCPConn) {
-	buf := make([]byte, ModelSize*10+LastModelSize)
-	// 784 * 10個のモデル
-	// TODO: i < 10に
-	for i := 0; i < 1; i++ {
-		tlog("upload phase: %v", i)
-		n, err := conn.Read(buf)
-		if err != nil {
-			if err == io.EOF {
-				return
-			}
-			log.Fatalln(err)
-		}
-
-		if n != ModelSize*10+LastModelSize {
-			log.Fatalf("model size is not correct(3136): %v", n)
-		}
-
-		origLeaderId, _ := h.CheckSingleLeader()
-		h.SubmitToServer(origLeaderId, buf)
-	}
-
-	/*
-		last_buf := make([]byte, 10*4)
-		// MEMO: EOFだとerrになって落ちる対策
-		n, err := conn.Read(last_buf)
-		if err != nil {
-			if err == io.EOF {
-				return
-			}
-			log.Fatalln(err)
-		}
-		if n != LastModelSize {
-			log.Fatalf("model size is not correct(40): %v", n)
-		}
-
-		origLeaderId, _ := h.CheckSingleLeader()
-		h.SubmitToServer(origLeaderId, last_buf)
-	*/
-	if _, err := conn.Write([]byte("end")); err != nil {
-		log.Fatalln(err)
 	}
 }
 
@@ -225,7 +139,9 @@ func (h *Harness) DisconnectPeer(id int) {
 			h.cluster[j].DisconnectPeer(id)
 		}
 	}
+	h.mu.Lock()
 	h.connected[id] = false
+	h.mu.Unlock()
 }
 
 // ReconnectPeer connects a server to all other servers in the cluster.
@@ -241,7 +157,9 @@ func (h *Harness) ReconnectPeer(id int) {
 			}
 		}
 	}
+	h.mu.Lock()
 	h.connected[id] = true
+	h.mu.Unlock()
 }
 
 // CrashPeer "crashes" a server by disconnecting it from all peers and then
@@ -294,8 +212,11 @@ func (h *Harness) CheckSingleLeader() (int, int) {
 		leaderId := -1
 		leaderTerm := -1
 		for i := 0; i < h.n; i++ {
+			h.mu.Lock()
+			isConnected := h.connected[i]
+			h.mu.Unlock()
 			// connectしているリーダーは一人だけ
-			if h.connected[i] {
+			if isConnected {
 				_, term, isLeader := h.cluster[i].cm.Report()
 				if isLeader {
 					if leaderId < 0 {
@@ -418,6 +339,90 @@ func (h *Harness) CheckNotCommitted(cmd int) {
 			for c := 0; c < len(h.commits[i]); c++ {
 				gotCmd := h.commits[i][c].Command.(int)
 				if gotCmd == cmd {
+					h.t.Errorf("found %d at commits[%d][%d], expected none", cmd, i, c)
+				}
+			}
+		}
+	}
+}
+
+func (h *Harness) CheckModelCommitted(cmd []byte) (nc int, index int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	// Find the length of the commits slice for connected servers.
+	commitsLen := -1
+	for i := 0; i < h.n; i++ {
+		if h.connected[i] {
+			if commitsLen >= 0 {
+				// If this was set already, expect the new length to be the same.
+				if len(h.commits[i]) != commitsLen {
+					h.t.Fatalf("commits[%d] = %d, commitsLen = %d", i, h.commits[i], commitsLen)
+				}
+			} else {
+				commitsLen = len(h.commits[i])
+			}
+		}
+	}
+
+	// Check consistency of commits from the start and to the command we're asked
+	// about. This loop will return once a command=cmd is found.
+	for c := 0; c < commitsLen; c++ {
+		cmdAtC := []byte("")
+		for i := 0; i < h.n; i++ {
+			if h.connected[i] {
+				cmdOfN := []byte(fmt.Sprintf("%s", h.commits[i][c].Command))
+				if len(cmdAtC) >= 0 {
+					if reflect.DeepEqual(cmdOfN, cmdAtC) {
+						h.t.Errorf("got %d, want %d at h.commits[%d][%d]", cmdOfN, cmdAtC, i, c)
+					}
+				} else {
+					cmdAtC = cmdOfN
+				}
+			}
+		}
+
+		if reflect.DeepEqual(cmdAtC, cmd) {
+			// Check consistency of Index.
+			index := -1
+			nc := 0
+			for i := 0; i < h.n; i++ {
+				if h.connected[i] {
+					if index >= 0 && h.commits[i][c].Index != index {
+						h.t.Errorf("got Index=%d, want %d at h.commits[%d][%d]", h.commits[i][c].Index, index, i, c)
+					} else {
+						index = h.commits[i][c].Index
+					}
+					nc++
+				}
+			}
+			return nc, index
+		}
+	}
+
+	// If there's no early return, we haven't found the command we were looking
+	// for.
+	h.t.Errorf("cmd=%d not found in commits", cmd)
+	return -1, -1
+}
+
+func (h *Harness) CheckModelCommittedN(cmd []byte, n int) {
+	nc, _ := h.CheckModelCommitted(cmd)
+	if nc != n {
+		h.t.Errorf("CheckCommittedN got nc=%d, want %d", nc, n)
+	}
+}
+
+func (h *Harness) CheckModelNotCommitted(cmd []byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	for i := 0; i < h.n; i++ {
+		if h.connected[i] {
+			for c := 0; c < len(h.commits[i]); c++ {
+				gotCmd := []byte(fmt.Sprintf("%s", h.commits[i][c].Command))
+
+				if reflect.DeepEqual(gotCmd, cmd) {
 					h.t.Errorf("found %d at commits[%d][%d], expected none", cmd, i, c)
 				}
 			}

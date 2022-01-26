@@ -1,6 +1,5 @@
-keras==2.7.0
-matplotlib==3.5.1
-numpy==1.21.4
-scikit_learn==1.0.1
-tensorflow==2.7.0
-tensorflow_federated==0.19.0
+tensorflow_federated
+tensorflow_datasets
+flask
+flask_cors
+waitress

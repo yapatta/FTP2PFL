@@ -6,10 +6,16 @@ package raft
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/gob"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math/rand"
+	"net/http"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -18,6 +24,24 @@ import (
 
 const DebugCM = 1
 
+type Upload struct {
+	Model    []byte `json:"model"`
+	Loss     string `json:"loss"`
+	Accuracy string `json:"acc"`
+}
+
+type ClientUpload struct {
+	Model    []byte `json:"model"`
+	Num      int    `json:"num"`
+	Loss     string `json:"loss"`
+	Accuracy string `json:"acc"`
+}
+
+type ModelParam struct {
+	Model []byte `json:"model"`
+	Num   int    `json:"num"`
+}
+
 // CommitEntry is the data reported by Raft to the commit channel. Each commit
 // entry notifies the client that consensus was reached on a command and it can
 // be applied to the client's state machine.
@@ -25,11 +49,18 @@ type CommitEntry struct {
 	// Command is the client command being committed.
 	Command interface{}
 
+	// sha256 of Command
+	Hash []byte
+
 	// Index is the log index at which the client command is committed.
 	Index int
 
 	// Term is the Raft term at which the client command is committed.
 	Term int
+}
+
+func (ce CommitEntry) String() string {
+	return fmt.Sprintf("CommitEntry{Hash: %v, Index: %d, Term: %d}", hex.EncodeToString(ce.Hash), ce.Index, ce.Term)
 }
 
 type CMState int
@@ -58,7 +89,12 @@ func (s CMState) String() string {
 
 type LogEntry struct {
 	Command interface{}
+	Hash    []byte
 	Term    int
+}
+
+func (le LogEntry) String() string {
+	return fmt.Sprintf("LogEntry{Hash: %v, Term: %v}", hex.EncodeToString(le.Hash), le.Term)
 }
 
 // ConsensusModule (CM) implements a single node of Raft consensus.
@@ -90,7 +126,13 @@ type ConsensusModule struct {
 
 	// triggerAEChan is an internal notification channel used to trigger
 	// sending new AEs to followers when interesting changes occurred.
+	// こいつを受け取るとleaderがAppendEntriesを送る
 	triggerAEChan chan struct{}
+
+	// こいつがAggregateのトリガー
+	triggerAggregateChan chan struct{}
+	// 今のラウンドのモデル
+	models []ModelParam
 
 	// Persistent Raft state on all servers
 	currentTerm int
@@ -121,6 +163,7 @@ func NewConsensusModule(id int, peerIds []int, server *Server, storage Storage, 
 	cm.commitChan = commitChan
 	cm.newCommitReadyChan = make(chan struct{}, 16)
 	cm.triggerAEChan = make(chan struct{}, 1)
+	cm.triggerAggregateChan = make(chan struct{}, 1)
 	cm.state = Follower
 	cm.votedFor = -1
 	cm.commitIndex = -1
@@ -160,9 +203,9 @@ func (cm *ConsensusModule) Report() (id int, term int, isLeader bool) {
 // a different CM to submit this command to.
 func (cm *ConsensusModule) Submit(command interface{}) bool {
 	cm.mu.Lock()
-	cm.dlog("Submit received by %v: %v", cm.state, command)
+	cm.dlog("Submit received by %v:  %v(sha256)", cm.state, getBinaryBySHA256(command.([]byte)))
 	if cm.state == Leader {
-		cm.log = append(cm.log, LogEntry{Command: command, Term: cm.currentTerm})
+		cm.log = append(cm.log, LogEntry{Command: command, Hash: getBinaryBySHA256(command.([]byte)), Term: cm.currentTerm})
 		cm.persistToStorage()
 		cm.dlog("... log=%v", cm.log)
 		cm.mu.Unlock()
@@ -272,11 +315,6 @@ func (cm *ConsensusModule) RequestVote(args RequestVoteArgs, reply *RequestVoteR
 		cm.becomeFollower(args.Term)
 	}
 
-	if !cm.server.battery.Enough() {
-		cm.dlog("... battery is not enough in RequestVote")
-		cm.becomeFollower(args.Term)
-	}
-
 	if cm.currentTerm == args.Term &&
 		(cm.votedFor == -1 || cm.votedFor == args.CandidateId) &&
 		(args.LastLogTerm > lastLogTerm ||
@@ -314,7 +352,7 @@ type AppendEntriesReply struct {
 	ConflictTerm  int
 }
 
-// ApendEntriesを受け取った
+// ApendEntriesを受け取った側の処理
 func (cm *ConsensusModule) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -330,6 +368,7 @@ func (cm *ConsensusModule) AppendEntries(args AppendEntriesArgs, reply *AppendEn
 	}
 
 	reply.Success = false
+
 	if args.Term == cm.currentTerm {
 		// 現在のタームが同じで自身がフォロワーじゃない場合フォロワーになる
 		if cm.state != Follower {
@@ -457,7 +496,7 @@ func (cm *ConsensusModule) runElectionTimer() {
 
 		// Start an election if we haven't heard from a leader or haven't voted for
 		// someone for the duration of the timeout.
-		if elapsed := time.Since(cm.electionResetEvent); elapsed >= timeoutDuration {
+		if elapsed := time.Since(cm.electionResetEvent); elapsed >= timeoutDuration && cm.BatteryEnough() {
 			cm.startElection()
 			cm.mu.Unlock()
 			return
@@ -553,6 +592,44 @@ func (cm *ConsensusModule) startLeader() {
 	// This goroutine runs in the background and sends AEs to peers:
 	// * Whenever something is sent on triggerAEChan
 	// * ... Or every 50 ms, if no events occur on triggerAEChan
+	go func(learningTimeout time.Duration) {
+		cm.leaderSendModels()
+
+		t := time.NewTimer(learningTimeout)
+		defer t.Stop()
+		for {
+			doSend := false
+			select {
+			case <-t.C:
+				doSend = true
+				t.Stop()
+				t.Reset(learningTimeout)
+			case _, ok := <-cm.triggerAggregateChan:
+				if ok {
+					doSend = true
+				} else {
+					return
+				}
+				// Reset timer for heartbeatTimeout.
+				// ref. https://makiuchi-d.github.io/2019/12/11/qiita-e1024e3abbd0d71e1fcf.ja.html
+				if !t.Stop() {
+					<-t.C // チャンネルからイベントを取り除く
+				}
+				t.Reset(learningTimeout)
+			}
+
+			if doSend {
+				cm.mu.Lock()
+				if cm.state != Leader {
+					cm.mu.Unlock()
+					return
+				}
+				cm.mu.Unlock()
+				cm.leaderSendModels()
+			}
+		}
+	}(30 * time.Second)
+
 	go func(heartbeatTimeout time.Duration) {
 		// Immediately send AEs to peers.
 		cm.leaderSendAEs()
@@ -595,9 +672,284 @@ func (cm *ConsensusModule) startLeader() {
 	}(50 * time.Millisecond)
 }
 
+func (cm *ConsensusModule) ReadParentModel() ([]byte, error) {
+	cm.mu.Lock()
+	// savedCommitIndex := cm.commitIndex
+	savedLastLogIndex := len(cm.log) - 1
+
+	// 最新のコミットログを取得
+	if savedLastLogIndex >= 0 {
+		e := cm.log[savedLastLogIndex]
+		cm.mu.Unlock()
+		return e.Command.([]byte), nil
+	}
+	/*
+		if savedCommitIndex >= 0 {
+			e := cm.log[savedCommitIndex]
+			cm.mu.Unlock()
+			return e.Command.([]byte), nil
+		}
+	*/
+	cm.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://0.0.0.0:9000/initial", http.NoBody)
+	cm.dlog("aggregated model accuracy: inital, loss: model")
+	if err != nil {
+		return nil, err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	byteArray, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	var u Upload
+	if err := json.Unmarshal(byteArray, &u); err != nil {
+		return nil, err
+	}
+
+	return u.Model, nil
+}
+
+func (cm *ConsensusModule) ReadClientModel(m []byte) ([]byte, int, error) {
+	model := map[string][]byte{"model": m}
+	jsonStr, err := json.Marshal(model)
+	if err != nil {
+		return nil, -1, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://0.0.0.0:9000/clients/%v", cm.id), bytes.NewBuffer(jsonStr))
+	if err != nil {
+		return nil, -1, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, -1, err
+	}
+	defer res.Body.Close()
+
+	byteArray, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, -1, err
+	}
+
+	var u ClientUpload
+	if err := json.Unmarshal(byteArray, &u); err != nil {
+		return nil, -1, err
+	}
+
+	cm.dlog("client model accuracy: %v(n=%v), loss: %v", u.Accuracy, u.Num, u.Loss)
+
+	return u.Model, u.Num, nil
+}
+
+type ModelAggregationArgs struct {
+	Model []byte
+	Term  int
+}
+
+func (maa ModelAggregationArgs) String() string {
+	return fmt.Sprintf("ModelAggregationArgs{Hash: %v, Term: %v}", hex.EncodeToString(getBinaryBySHA256(maa.Model)), maa.Term)
+}
+
+type ModelAggregationReply struct {
+	Success     bool
+	Term        int
+	ClientModel []byte
+	DataNum     int
+}
+
+func (mar ModelAggregationReply) String() string {
+	return fmt.Sprintf("ModelAggregationReply{Success: %v, Term: %v, ClientModel: %v}", mar.Success, mar.Term, hex.EncodeToString(getBinaryBySHA256(mar.ClientModel)))
+}
+
+func (cm *ConsensusModule) ModelAggregation(args ModelAggregationArgs, reply *ModelAggregationReply) error {
+	cm.mu.Lock()
+	currentState := cm.state
+	currentTerm := cm.currentTerm
+	cm.mu.Unlock()
+
+	if currentState == Dead {
+		return nil
+	}
+	cm.dlog("received: %+v", args)
+
+	reply.Success = false
+	if args.Term == currentTerm {
+		// 現在のタームが同じで自身がフォロワーじゃない場合フォロワーになる
+		if currentState != Follower {
+			return fmt.Errorf("ID: %v is not Follower", cm.id)
+		}
+
+		m, n, err := cm.ReadClientModel(args.Model)
+		if err != nil {
+			return err
+		}
+
+		reply.Success = true
+		reply.ClientModel = m
+		reply.DataNum = n
+		reply.Term = currentTerm
+	}
+
+	cm.dlog("ModelAggregation reply: %+v", *reply)
+
+	return nil
+}
+
+func (cm *ConsensusModule) leaderSendModels() {
+	if cm.state != Leader {
+		return
+	}
+
+	parentModel, err := cm.ReadParentModel()
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	// リセット
+	cm.mu.Lock()
+	savedCurrentTerm := cm.currentTerm
+	cm.models = []ModelParam{}
+	cm.mu.Unlock()
+
+	args := &ModelAggregationArgs{
+		Model: parentModel,
+		Term:  savedCurrentTerm,
+	}
+
+	wg := &sync.WaitGroup{}
+	successCount := 0
+
+	// myself
+	wg.Add(1)
+	go func(peerId int) {
+		defer wg.Done()
+		m, n, err := cm.ReadClientModel(args.Model)
+		if err != nil {
+			return
+		}
+		cm.mu.Lock()
+		cm.models = append(cm.models, ModelParam{Model: m, Num: n})
+		successCount++
+		cm.mu.Unlock()
+	}(cm.id)
+
+	for _, peerId := range cm.peerIds {
+		wg.Add(1)
+		go func(peerId int) {
+			defer wg.Done()
+
+			cm.dlog("sending ParentModel to %v: args=%+v", peerId, args)
+			var reply ModelAggregationReply
+			if err := cm.server.Call(peerId, "Federated.ModelAggregation", args, &reply); err != nil {
+				cm.dlog("ModelAggregation failed in %v: %v", peerId, err)
+				return
+			}
+			if cm.state != Leader {
+				cm.dlog("while waiting for reply, state = %v", cm.state)
+				return
+			}
+
+			if reply.Term != savedCurrentTerm {
+				cm.dlog("term out of date in ModelAggregation")
+				return
+			}
+
+			if reply.Success {
+				cm.mu.Lock()
+				cm.models = append(cm.models, ModelParam{Model: reply.ClientModel, Num: reply.DataNum})
+				successCount++
+				cm.mu.Unlock()
+			}
+		}(peerId)
+	}
+	wg.Wait()
+
+	if successCount*2 > len(cm.peerIds)+1 {
+		updatedParentModel, err := cm.ReadAggregatedModel()
+		if err != nil {
+			log.Fatalln(err)
+		}
+
+		// Raftでバックアップ
+		if !cm.Submit(updatedParentModel) {
+			cm.dlog("model submit failed in %v", cm.id)
+			return
+		}
+
+		cm.triggerAggregateChan <- struct{}{}
+	}
+}
+
+func (cm *ConsensusModule) ReadAggregatedModel() ([]byte, error) {
+	cm.mu.Lock()
+	models := map[string][]ModelParam{"models": cm.models}
+	jsonStr, err := json.Marshal(models)
+	if err != nil {
+		return nil, err
+	}
+
+	cm.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://0.0.0.0:9000/aggregate/%v", len(cm.peerIds)), bytes.NewBuffer(jsonStr))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	byteArray, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var u Upload
+	if err := json.Unmarshal(byteArray, &u); err != nil {
+		return nil, err
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	cm.dlog("aggregated model accuracy: %v, loss: %v", u.Accuracy, u.Loss)
+
+	return u.Model, nil
+}
+
 // leaderSendAEs sends a round of AEs to all peers, collects their
 // replies and adjusts cm's state.
 func (cm *ConsensusModule) leaderSendAEs() {
+	/*
+		cm.mu.Lock()
+		if !cm.server.battery.Enough() {
+			cm.dlog("Battery is not enough")
+			cm.becomeFollower(cm.currentTerm)
+			cm.mu.Unlock()
+			return
+		}
+	*/
+
 	cm.mu.Lock()
 	savedCurrentTerm := cm.currentTerm
 	cm.mu.Unlock()
@@ -728,6 +1080,7 @@ func (cm *ConsensusModule) commitChanSender() {
 		for i, entry := range entries {
 			cm.commitChan <- CommitEntry{
 				Command: entry.Command,
+				Hash:    entry.Hash,
 				Index:   savedLastApplied + i + 1,
 				Term:    savedTerm,
 			}
@@ -736,9 +1089,19 @@ func (cm *ConsensusModule) commitChanSender() {
 	cm.dlog("commitChanSender done")
 }
 
+func (cm *ConsensusModule) BatteryEnough() bool {
+	return cm.server.BatteryEnough()
+}
+
 func intMin(a, b int) int {
 	if a < b {
 		return a
 	}
 	return b
+}
+
+// SHA256 without key
+func getBinaryBySHA256(s []byte) []byte {
+	r := sha256.Sum256(s)
+	return r[:]
 }

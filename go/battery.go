@@ -41,7 +41,7 @@ func (b *Battery) Stop() {
 	close(b.shutdown)
 }
 
-func (b *Battery) NormalAction() {
+func (b *Battery) NormalAction(id int) {
 	for {
 		b.mu.Lock()
 
@@ -68,7 +68,7 @@ func (b *Battery) NormalAction() {
 			}
 		}
 
-		log.Printf("battery: %v", b.percent)
+		log.Printf("[%d] battery: %v%%", id, b.percent)
 
 		time.Sleep(200 * time.Millisecond)
 		b.mu.Unlock()
