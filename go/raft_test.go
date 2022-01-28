@@ -260,6 +260,36 @@ func TestFLCrashFollower(t *testing.T) {
 
 }
 
+func TestFLBatteryEnough(t *testing.T) {
+	N := 5
+	SEC := 1
+
+	if cn := os.Getenv("CLIENT_NUM"); cn != "" {
+		N, _ = strconv.Atoi(cn)
+	}
+
+	if sec := os.Getenv("SEC"); sec != "" {
+		SEC, _ = strconv.Atoi(sec)
+	}
+
+	fmt.Printf("%v, %v\n", N, SEC)
+
+	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
+
+	h := NewHarness(t, N)
+	defer h.Shutdown()
+
+	sleepMs(2000)
+	for i := 0; i < N; i++ {
+		origLeaderId, _ := h.CheckSingleLeader()
+		h.DisconnectPeer(origLeaderId)
+		sleepMs(2000)
+		h.ReconnectPeer(origLeaderId)
+		sleepMs(2000)
+	}
+	// Submit a couple of values to a fully connected cluster.
+}
+
 func TestCommitMultipleCommands(t *testing.T) {
 	defer leaktest.CheckTimeout(t, 100*time.Millisecond)()
 

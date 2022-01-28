@@ -10,7 +10,7 @@ from typing import List, Tuple
 # for test
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
-NUM_CLIENTS = 14
+NUM_CLIENTS = 12
 NUM_EPOCHS = 20
 BATCH_SIZE = 20
 SHUFFLE_BUFFER = 100
@@ -19,6 +19,7 @@ PREFETCH_BUFFER = 10
 emnist_train, emnist_test = tff.simulation.datasets.emnist.load_data()
 # <ParallelMapDataset  shapes: , types: >
 sample_clients = emnist_train.client_ids[0:NUM_CLIENTS]
+
 
 def preprocess(dataset):
     # OrderDict([('label', <tf.Tensor>), ('pixels', <tf.Tensor>)]) -> Tuple()
@@ -118,6 +119,8 @@ def create_model():
 
 def create_federated_test_data(l: int):
     return make_federated_data(emnist_test, sample_clients[:l])
+
+federated_test_data = create_federated_test_data(NUM_CLIENTS)
 
 def learn(id: int, bweights: bytes) -> Tuple[List[np.ndarray], int, str, str]:
     model = create_model()

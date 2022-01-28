@@ -588,6 +588,7 @@ func (cm *ConsensusModule) startLeader() {
 		cm.matchIndex[peerId] = -1
 	}
 	cm.dlog("becomes Leader; term=%d, nextIndex=%v, matchIndex=%v; log=%v", cm.currentTerm, cm.nextIndex, cm.matchIndex, cm.log)
+	cm.dlog("becomes Leader; battery: %v", cm.BatteryInfo())
 
 	// This goroutine runs in the background and sends AEs to peers:
 	// * Whenever something is sent on triggerAEChan
@@ -692,12 +693,15 @@ func (cm *ConsensusModule) ReadParentModel() ([]byte, error) {
 	*/
 	cm.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://0.0.0.0:9000/initial", http.NoBody)
 	cm.dlog("aggregated model accuracy: inital, loss: model")
 	if err != nil {
+		if cm.state != Leader {
+			return nil, err
+		}
 		return nil, err
 	}
 	res, err := http.DefaultClient.Do(req)
@@ -815,6 +819,9 @@ func (cm *ConsensusModule) leaderSendModels() {
 	}
 
 	parentModel, err := cm.ReadParentModel()
+	if parentModel == nil {
+		return
+	}
 	if err != nil {
 		log.Fatalln(err)
 	}
@@ -831,21 +838,23 @@ func (cm *ConsensusModule) leaderSendModels() {
 	}
 
 	wg := &sync.WaitGroup{}
-	successCount := 0
+	successCount := 1
 
 	// myself
-	wg.Add(1)
-	go func(peerId int) {
-		defer wg.Done()
-		m, n, err := cm.ReadClientModel(args.Model)
-		if err != nil {
-			return
-		}
-		cm.mu.Lock()
-		cm.models = append(cm.models, ModelParam{Model: m, Num: n})
-		successCount++
-		cm.mu.Unlock()
-	}(cm.id)
+	/*
+		wg.Add(1)
+			go func(peerId int) {
+				defer wg.Done()
+				m, n, err := cm.ReadClientModel(args.Model)
+				if err != nil {
+					return
+				}
+				cm.mu.Lock()
+				cm.models = append(cm.models, ModelParam{Model: m, Num: n})
+				successCount++
+				cm.mu.Unlock()
+			}(cm.id)
+	*/
 
 	for _, peerId := range cm.peerIds {
 		wg.Add(1)
@@ -940,16 +949,6 @@ func (cm *ConsensusModule) ReadAggregatedModel() ([]byte, error) {
 // leaderSendAEs sends a round of AEs to all peers, collects their
 // replies and adjusts cm's state.
 func (cm *ConsensusModule) leaderSendAEs() {
-	/*
-		cm.mu.Lock()
-		if !cm.server.battery.Enough() {
-			cm.dlog("Battery is not enough")
-			cm.becomeFollower(cm.currentTerm)
-			cm.mu.Unlock()
-			return
-		}
-	*/
-
 	cm.mu.Lock()
 	savedCurrentTerm := cm.currentTerm
 	cm.mu.Unlock()
@@ -1091,6 +1090,10 @@ func (cm *ConsensusModule) commitChanSender() {
 
 func (cm *ConsensusModule) BatteryEnough() bool {
 	return cm.server.BatteryEnough()
+}
+
+func (cm *ConsensusModule) BatteryInfo() string {
+	return cm.server.BatteryInfo()
 }
 
 func intMin(a, b int) int {

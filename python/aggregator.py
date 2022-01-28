@@ -127,8 +127,7 @@ def aggregate(nodes_num: int, bmodels: List[bytes], nums: List[int]) -> Tuple[Li
 
     model = create_model()
     model.layers[1].set_weights(aggregated)
-    federated_test_data = client.create_federated_test_data(nodes_num)
-    dataset_sum = reduce(lambda x,y: x.concatenate(y), federated_test_data)
+    dataset_sum = reduce(lambda x,y: x.concatenate(y), client.federated_test_data)
 
     """
     if leader_id == 0:

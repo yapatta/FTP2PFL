@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"log"
 	"math"
 	"math/rand"
@@ -26,11 +27,19 @@ func NewBattery() *Battery {
 	return b
 }
 
+func (b *Battery) Info() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return fmt.Sprintf("%v, %v", b.onCharge, b.percent)
+
+}
+
 func (b *Battery) Enough() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	return b.live && (b.onCharge || b.percent >= 20)
+	return b.live && (b.onCharge || b.percent >= 60)
 }
 
 func (b *Battery) Stop() {
@@ -48,14 +57,18 @@ func (b *Battery) NormalAction(id int) {
 		if b.onCharge {
 			b.percent++
 			if b.percent >= 100 {
+				b.mu.Unlock()
 				time.Sleep(500 * time.Millisecond)
+				b.mu.Lock()
 				b.onCharge = false
 			}
 		} else {
 			b.percent--
 			if b.percent < 10 {
+				b.mu.Unlock()
 				time.Sleep(600 * time.Millisecond)
 				b.onCharge = true
+				b.mu.Lock()
 			}
 		}
 
@@ -68,10 +81,8 @@ func (b *Battery) NormalAction(id int) {
 			}
 		}
 
-		log.Printf("[%d] battery: %v%%", id, b.percent)
-
-		time.Sleep(200 * time.Millisecond)
 		b.mu.Unlock()
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
