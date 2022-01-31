@@ -39,7 +39,7 @@ func (b *Battery) Enough() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	return b.live && (b.onCharge || b.percent >= 60)
+	return b.live && (b.onCharge || b.percent >= 20)
 }
 
 func (b *Battery) Stop() {
