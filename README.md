@@ -61,8 +61,6 @@ $ python3 accuracy.py TestFLBasic 180
 $ python3 loss.py TestFLBasic 180
 ```
 
-と実行すると, `go/data/accuracy/TestFLBasic-180-accuracy.pdf`, `go/data/loss/TestFLBasic-180-loss.pdf`のようなファイルが生成される. これらの画像は連合学習におけるモデルの精度, 損失をグラフ化したものである. 
+と実行すると, !["go/data/accuracy/TestFLBasic-180-accuracy.pdf"](go/data/accuracy/TestFLBasic-180-accuracy.pdf), ![go/data/loss/TestFLBasic-180-loss.pdf](go/data/loss/TestFLBasic-180-loss.pdf)のようなファイルが生成される. これらの画像は連合学習におけるモデルの精度, 損失をグラフ化したものである. 
 
-!["TestFLBasic-180-accuracy.pdf"](go/data/accuracy/TestFLBasic-180-accuracy.pdf)
 
-![TestFLBasic-180-loss.pdf](go/data/loss/TestFLBasic-180-loss.pdf)
