@@ -16,10 +16,11 @@
 
 # Python
 venv/
+python/*.model
+python/__pycache__/*
 # Go
 go/*.html
 go/*.log
 go/*.model
 !go/data/**/*.pdf
-python/*.model
 
