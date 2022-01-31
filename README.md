@@ -2,9 +2,9 @@
 
 ## 趣旨
 
-yapattaが卒論研究で実装したもの. 分散合意アルゴリズムRaft[^https://raft.github.io/raft.pdf]を用いることで, 集計サーバがダウンしても他のノードが集計サーバになれば固定の集計サーバを持たずにかつ耐障害性を持った状態で連合学習[^https://arxiv.org/abs/1602.05629]を継続できるのでは？という発想のもと生まれたシステム. モバイル向けと謳っているだけあって、バッテリ残量のシミューレーションが入っており, バッテリー残量が一定以上のノードが集計サーバに選ばれる.  
+yapattaが卒論研究で実装したもの. 分散合意アルゴリズムRaft[^Raft]を用いることで, 集計サーバがダウンしても他のノードが集計サーバになれば固定の集計サーバを持たずにかつ耐障害性を持った状態で連合学習[^FederatedLearning]を継続できるのでは？という発想のもと生まれたシステム. モバイル向けと謳っているだけあって、バッテリ残量のシミューレーションが入っており, バッテリー残量が一定以上のノードが集計サーバに選ばれる.  
 
-## install
+## Install
 
 ```sh
 $ cd ../python
@@ -14,7 +14,7 @@ $ pip install --upgrade pip
 $ pip install -r requirements.txt
 ```
 
-## Test
+## Test and Evaluation
 
 ### 1. APIサーバ起動
 
@@ -64,3 +64,5 @@ $ python3 loss.py TestFLBasic 180
 と実行すると, !["go/data/accuracy/TestFLBasic-180-accuracy.pdf"](go/data/accuracy/TestFLBasic-180-accuracy.pdf), ![go/data/loss/TestFLBasic-180-loss.pdf](go/data/loss/TestFLBasic-180-loss.pdf)のようなファイルが生成される. これらの画像は連合学習におけるモデルの精度, 損失をグラフ化したものである. 
 
 
+[^Raft]: https://raft.github.io/raft.pdf
+[^FederatedLearning]: https://arxiv.org/abs/1602.05629
