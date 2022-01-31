@@ -1,4 +1,4 @@
-# 耐障害性を持ったモバイル向けP2P連合学習システム
+# FTP2PFL(Fault Tolerant P2P Federated Learning For Mobile)
 
 ## 趣旨
 
