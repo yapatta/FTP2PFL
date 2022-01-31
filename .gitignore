@@ -14,11 +14,12 @@
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
-# python
+# Python
 venv/
+# Go
 go/*.html
 go/*.log
 go/*.model
-go/data/
+go/data/*/*
 python/*.model
 
