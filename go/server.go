@@ -30,7 +30,6 @@ type Server struct {
 
 	cm       *ConsensusModule
 	storage  Storage
-	battery  *Battery
 	rpcProxy *RPCProxy
 
 	rpcServer *rpc.Server
@@ -49,7 +48,6 @@ func NewServer(serverId int, peerIds []int, storage Storage, ready <-chan interf
 	s.serverId = serverId
 	s.peerIds = peerIds
 	s.peerClients = make(map[int]*rpc.Client)
-	s.battery = NewBattery()
 	s.storage = storage
 	s.ready = ready
 	s.commitChan = commitChan
@@ -77,8 +75,6 @@ func (s *Server) Serve() {
 	log.Printf("[%v] listening at %s", s.serverId, s.listener.Addr())
 	s.mu.Unlock()
 
-	go s.battery.NormalAction(s.serverId)
-
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
@@ -103,14 +99,6 @@ func (s *Server) Serve() {
 	}()
 }
 
-func (s *Server) BatteryEnough() bool {
-	return s.battery.Enough()
-}
-
-func (s *Server) BatteryInfo() string {
-	return s.battery.Info()
-}
-
 // DisconnectAll closes all the client connections to peers for this server.
 func (s *Server) DisconnectAll() {
 	s.mu.Lock()
@@ -130,7 +118,6 @@ func (s *Server) Shutdown() {
 	// 複数のgoroutineに一斉に通知できる
 	// refer. https://qiita.com/castaneai/items/7815f3563b256ae9b18d
 	close(s.quit)
-	s.battery.Stop()
 	s.listener.Close()
 	s.wg.Wait()
 }
@@ -182,10 +169,10 @@ func (s *Server) Call(id int, serviceMethod string, args interface{}, reply inte
 
 // RPCProxy is a trivial pass-thru proxy type for ConsensusModule's RPC methods.
 // It's useful for:
-// - Simulating a small delay in RPC transmission.
-// - Avoiding running into https://github.com/golang/go/issues/19957
-// - Simulating possible unreliable connections by delaying some messages
-//   significantly and dropping others when RAFT_UNRELIABLE_RPC is set.
+//   - Simulating a small delay in RPC transmission.
+//   - Avoiding running into https://github.com/golang/go/issues/19957
+//   - Simulating possible unreliable connections by delaying some messages
+//     significantly and dropping others when RAFT_UNRELIABLE_RPC is set.
 type RPCProxy struct {
 	cm *ConsensusModule
 }

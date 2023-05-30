@@ -454,7 +454,7 @@ func (cm *ConsensusModule) electionTimeout() time.Duration {
 	if len(os.Getenv("RAFT_FORCE_MORE_REELECTION")) > 0 && rand.Intn(3) == 0 {
 		return time.Duration(150) * time.Millisecond
 	} else {
-		return time.Duration(150+rand.Intn(150) /*-cm.battery.percent */) * time.Millisecond
+		return time.Duration(150+rand.Intn(150)) * time.Millisecond
 	}
 }
 
@@ -496,7 +496,7 @@ func (cm *ConsensusModule) runElectionTimer() {
 
 		// Start an election if we haven't heard from a leader or haven't voted for
 		// someone for the duration of the timeout.
-		if elapsed := time.Since(cm.electionResetEvent); elapsed >= timeoutDuration && cm.BatteryEnough() {
+		if elapsed := time.Since(cm.electionResetEvent); elapsed >= timeoutDuration {
 			cm.startElection()
 			cm.mu.Unlock()
 			return
@@ -588,7 +588,6 @@ func (cm *ConsensusModule) startLeader() {
 		cm.matchIndex[peerId] = -1
 	}
 	cm.dlog("becomes Leader; term=%d, nextIndex=%v, matchIndex=%v; log=%v", cm.currentTerm, cm.nextIndex, cm.matchIndex, cm.log)
-	cm.dlog("becomes Leader; battery: %v", cm.BatteryInfo())
 
 	// This goroutine runs in the background and sends AEs to peers:
 	// * Whenever something is sent on triggerAEChan
@@ -1086,14 +1085,6 @@ func (cm *ConsensusModule) commitChanSender() {
 		}
 	}
 	cm.dlog("commitChanSender done")
-}
-
-func (cm *ConsensusModule) BatteryEnough() bool {
-	return cm.server.BatteryEnough()
-}
-
-func (cm *ConsensusModule) BatteryInfo() string {
-	return cm.server.BatteryInfo()
 }
 
 func intMin(a, b int) int {
