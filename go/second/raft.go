@@ -2,7 +2,7 @@
 //
 // Eli Bendersky [https://eli.thegreenplace.net]
 // This code is in the public domain.
-package raft
+package second
 
 import (
 	"bytes"
@@ -24,10 +24,11 @@ import (
 
 const DebugCM = 1
 
-type Upload struct {
-	Model    []byte `json:"model"`
-	Loss     string `json:"loss"`
-	Accuracy string `json:"acc"`
+type ModelResponse struct {
+	Model []byte `json:"model"`
+}
+type SplittedModelResponse struct {
+	Models [][]byte `json:"models"`
 }
 
 type ClientUpload struct {
@@ -37,9 +38,9 @@ type ClientUpload struct {
 	Accuracy string `json:"acc"`
 }
 
-type ModelParam struct {
-	Model []byte `json:"model"`
-	Num   int    `json:"num"`
+type ComputationResult struct {
+	Epoch int
+	// Peers []int
 }
 
 // CommitEntry is the data reported by Raft to the commit channel. Each commit
@@ -132,7 +133,10 @@ type ConsensusModule struct {
 	// こいつがAggregateのトリガー
 	triggerAggregateChan chan struct{}
 	// 今のラウンドのモデル
-	models []ModelParam
+	models [][]byte
+
+	firstModel  [][]byte
+	secondModel [][]byte
 
 	// Persistent Raft state on all servers
 	currentTerm int
@@ -672,35 +676,13 @@ func (cm *ConsensusModule) startLeader() {
 	}(50 * time.Millisecond)
 }
 
-func (cm *ConsensusModule) ReadParentModel() ([]byte, error) {
-	cm.mu.Lock()
-	// savedCommitIndex := cm.commitIndex
-	savedLastLogIndex := len(cm.log) - 1
-
-	// 最新のコミットログを取得
-	if savedLastLogIndex >= 0 {
-		e := cm.log[savedLastLogIndex]
-		cm.mu.Unlock()
-		return e.Command.([]byte), nil
-	}
-	/*
-		if savedCommitIndex >= 0 {
-			e := cm.log[savedCommitIndex]
-			cm.mu.Unlock()
-			return e.Command.([]byte), nil
-		}
-	*/
-	cm.mu.Unlock()
-
+func (cm *ConsensusModule) readSplittedModels() ([][]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://0.0.0.0:9000/initial", http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://0.0.0.0:9000/splitted-models/%d", cm.id), http.NoBody)
 	cm.dlog("aggregated model accuracy: inital, loss: model")
 	if err != nil {
-		if cm.state != Leader {
-			return nil, err
-		}
 		return nil, err
 	}
 	res, err := http.DefaultClient.Do(req)
@@ -713,12 +695,12 @@ func (cm *ConsensusModule) ReadParentModel() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	var u Upload
+	var u SplittedModelResponse
 	if err := json.Unmarshal(byteArray, &u); err != nil {
 		return nil, err
 	}
 
-	return u.Model, nil
+	return u.Models, nil
 }
 
 func (cm *ConsensusModule) ReadClientModel(m []byte) ([]byte, int, error) {
@@ -758,27 +740,27 @@ func (cm *ConsensusModule) ReadClientModel(m []byte) ([]byte, int, error) {
 	return u.Model, u.Num, nil
 }
 
-type ModelAggregationArgs struct {
+type SecureAverageComputationArgs struct {
 	Model []byte
+	Id    int
 	Term  int
 }
 
-func (maa ModelAggregationArgs) String() string {
-	return fmt.Sprintf("ModelAggregationArgs{Hash: %v, Term: %v}", hex.EncodeToString(getBinaryBySHA256(maa.Model)), maa.Term)
+func (maa SecureAverageComputationArgs) String() string {
+	return fmt.Sprintf("SecureAverageComputationArgs{Hash: %v, Term: %v}", hex.EncodeToString(getBinaryBySHA256(maa.Model)), maa.Term)
 }
 
-type ModelAggregationReply struct {
+type SecureAverageComputationReply struct {
 	Success     bool
 	Term        int
 	ClientModel []byte
-	DataNum     int
 }
 
-func (mar ModelAggregationReply) String() string {
-	return fmt.Sprintf("ModelAggregationReply{Success: %v, Term: %v, ClientModel: %v}", mar.Success, mar.Term, hex.EncodeToString(getBinaryBySHA256(mar.ClientModel)))
+func (mar SecureAverageComputationReply) String() string {
+	return fmt.Sprintf("SecureAverageComputationReply{Success: %v, Term: %v, ClientModel: %v}", mar.Success, mar.Term, hex.EncodeToString(getBinaryBySHA256(mar.ClientModel)))
 }
 
-func (cm *ConsensusModule) ModelAggregation(args ModelAggregationArgs, reply *ModelAggregationReply) error {
+func (cm *ConsensusModule) SecureAverageComputation(args SecureAverageComputationArgs, reply *SecureAverageComputationReply) error {
 	cm.mu.Lock()
 	currentState := cm.state
 	currentTerm := cm.currentTerm
@@ -796,18 +778,154 @@ func (cm *ConsensusModule) ModelAggregation(args ModelAggregationArgs, reply *Mo
 			return fmt.Errorf("ID: %v is not Follower", cm.id)
 		}
 
-		m, n, err := cm.ReadClientModel(args.Model)
+		// m, n, err := cm.ReadClientModel(args.Model)
+		splittedModels, err := cm.readSplittedModels()
 		if err != nil {
 			return err
 		}
-
+		reply.ClientModel = splittedModels[args.Id]
 		reply.Success = true
-		reply.ClientModel = m
-		reply.DataNum = n
 		reply.Term = currentTerm
+		reply.Process = 0
+
+		wg := &sync.WaitGroup{}
+		firstSuccessCount := 1
+		// split par_wt_i into f_wt, and create ps_wt
+		for _, peerId := range cm.peerIds {
+			wg.Add(1)
+			go func(peerId int) {
+				defer wg.Done()
+
+				args := &SecureAverageComputationArgs{
+					Model:   splittedModels[peerId],
+					Id:      cm.id,
+					Term:    currentTerm,
+					Process: 0,
+				}
+
+				cm.dlog("First Process in SecureAverageComputation from %v to %v: args=%+v", cm.id, peerId, args)
+				var reply SecureAverageComputationReply
+				if err := cm.server.Call(peerId, "Federated.SecureAverageComputation", args, &reply); err != nil {
+					cm.dlog("SecureAverageComputation failed in %v: %v", peerId, err)
+					return
+				}
+				if cm.state != Leader {
+					cm.dlog("while waiting for reply, state = %v", cm.state)
+					return
+				}
+
+				if reply.Term != savedCurrentTerm {
+					cm.dlog("term out of date in SecureAverageComputation")
+					return
+				}
+
+				if reply.Success {
+					cm.mu.Lock()
+					cm.models = append(cm.models, reply.ClientModel)
+					firstSuccessCount++
+					cm.mu.Unlock()
+				}
+			}(peerId)
+		}
+		wg.Wait()
 	}
 
-	cm.dlog("ModelAggregation reply: %+v", *reply)
+	cm.dlog("SecureAverageComputation reply: %+v", *reply)
+
+	return nil
+}
+
+type StartEpochArgs struct {
+	Term int
+}
+type StartEpochReply struct {
+	Term    int
+	Success bool
+}
+
+func (cm *ConsensusModule) FirstAverageComputation(args SecureAverageComputationArgs, reply *SecureAverageComputationReply) error {
+	cm.mu.Lock()
+	currentState := cm.state
+	currentTerm := cm.currentTerm
+	cm.mu.Unlock()
+
+	if currentState == Dead {
+		return nil
+	}
+	cm.dlog("received: %+v", args)
+
+	reply.Success = false
+	if args.Term == currentTerm {
+		if currentState != Follower {
+			return fmt.Errorf("ID: %v is not Follower", cm.id)
+		}
+		cm.mu.Lock()
+		cm.firstModel = append(cm.firstModel, args.Model)
+		cm.mu.Unlock()
+		reply.Success = true
+		reply.Term = currentTerm
+	}
+	return nil
+}
+
+func (cm *ConsensusModule) StartEpoch(args StartEpochArgs, reply *StartEpochReply) error {
+	cm.mu.Lock()
+	currentState := cm.state
+	currentTerm := cm.currentTerm
+	cm.firstModel = [][]byte{}
+	cm.secondModel = [][]byte{}
+	cm.mu.Unlock()
+
+	if currentState == Dead {
+		return nil
+	}
+	cm.dlog("received: %+v", args)
+
+	reply.Success = false
+	if args.Term != currentTerm {
+		if currentState != Follower {
+			return fmt.Errorf("ID: %v is not Follower", cm.id)
+		}
+	}
+	// 現在のタームが同じで自身がフォロワーじゃない場合フォロワーになる
+	if currentState != Follower {
+		return fmt.Errorf("ID: %v is not Follower", cm.id)
+	}
+
+	reply.Success = true
+	reply.Term = currentTerm
+	splittedModels, err := cm.readSplittedModels()
+	if err != nil {
+		return err
+	}
+
+	wg := &sync.WaitGroup{}
+	// split par_wt_i into f_wt, and create ps_wt
+	for _, peerId := range cm.peerIds {
+		wg.Add(1)
+		go func(peerId int) {
+			defer wg.Done()
+
+			args := &SecureAverageComputationArgs{
+				Model: splittedModels[peerId],
+				Id:    cm.id,
+				Term:  currentTerm,
+			}
+
+			cm.dlog("First Process in FirstAverageComputation from %v to %v: args=%+v", cm.id, peerId, args)
+			var reply SecureAverageComputationReply
+			if err := cm.server.Call(peerId, "Federated.FirstAverageComputation", args, &reply); err != nil {
+				cm.dlog("FirstAverageComputation failed in %v: %v", peerId, err)
+				return
+			}
+
+			if reply.Term != currentTerm {
+				cm.dlog("term out of date in SecureAverageComputation")
+				return
+			}
+		}(peerId)
+	}
+	wg.Wait()
 
 	return nil
 }
@@ -817,53 +935,27 @@ func (cm *ConsensusModule) leaderSendModels() {
 		return
 	}
 
-	parentModel, err := cm.ReadParentModel()
-	if parentModel == nil {
-		return
-	}
-	if err != nil {
-		log.Fatalln(err)
-	}
-
-	// リセット
 	cm.mu.Lock()
-	savedCurrentTerm := cm.currentTerm
-	cm.models = []ModelParam{}
+	currentTerm := cm.currentTerm
 	cm.mu.Unlock()
 
-	args := &ModelAggregationArgs{
-		Model: parentModel,
-		Term:  savedCurrentTerm,
-	}
-
 	wg := &sync.WaitGroup{}
-	successCount := 1
-
-	// myself
-	/*
-		wg.Add(1)
-			go func(peerId int) {
-				defer wg.Done()
-				m, n, err := cm.ReadClientModel(args.Model)
-				if err != nil {
-					return
-				}
-				cm.mu.Lock()
-				cm.models = append(cm.models, ModelParam{Model: m, Num: n})
-				successCount++
-				cm.mu.Unlock()
-			}(cm.id)
-	*/
+	// split par_wt_i into f_wt, and create ps_wt
+	startEpochSuccessCount := 0
 
 	for _, peerId := range cm.peerIds {
 		wg.Add(1)
 		go func(peerId int) {
 			defer wg.Done()
 
-			cm.dlog("sending ParentModel to %v: args=%+v", peerId, args)
-			var reply ModelAggregationReply
-			if err := cm.server.Call(peerId, "Federated.ModelAggregation", args, &reply); err != nil {
-				cm.dlog("ModelAggregation failed in %v: %v", peerId, err)
+			args := &StartEpochArgs{
+				Term: currentTerm,
+			}
+
+			cm.dlog("Start Epoch from %v to %v: args=%+v", cm.id, peerId, args)
+			var reply StartEpochReply
+			if err := cm.server.Call(peerId, "Federated.StartEpoch", args, &reply); err != nil {
+				cm.dlog("StartEpoch failed in %v: %v", peerId, err)
 				return
 			}
 			if cm.state != Leader {
@@ -871,51 +963,113 @@ func (cm *ConsensusModule) leaderSendModels() {
 				return
 			}
 
-			if reply.Term != savedCurrentTerm {
-				cm.dlog("term out of date in ModelAggregation")
+			if reply.Term != currentTerm {
+				cm.dlog("term out of date in SecureAverageComputation")
 				return
 			}
 
 			if reply.Success {
 				cm.mu.Lock()
-				cm.models = append(cm.models, ModelParam{Model: reply.ClientModel, Num: reply.DataNum})
-				successCount++
+				startEpochSuccessCount++
 				cm.mu.Unlock()
 			}
 		}(peerId)
 	}
 	wg.Wait()
 
-	if successCount*2 > len(cm.peerIds)+1 {
-		updatedParentModel, err := cm.ReadAggregatedModel()
-		if err != nil {
-			log.Fatalln(err)
-		}
-
-		// Raftでバックアップ
-		if !cm.Submit(updatedParentModel) {
-			cm.dlog("model submit failed in %v", cm.id)
-			return
-		}
-
+	// ノードが全員いないやり直し
+	if startEpochSuccessCount != len(cm.peerIds) {
 		cm.triggerAggregateChan <- struct{}{}
+		return
 	}
+
+	/*
+			firstAggregatedModel, err := cm.readFirstAggregatedModel()
+			if err != nil {
+				log.Fatalln(err)
+			}
+
+			wg := &sync.WaitGroup{}
+			secondSuccessCount := 1
+			cm.mu.Lock()
+			cm.models = [][]byte{firstAggregatedModel}
+			cm.mu.Unlock()
+
+			for _, peerId := range cm.peerIds {
+				wg.Add(1)
+				go func(peerId int) {
+					defer wg.Done()
+
+					args := &SecureAverageComputationArgs{
+						Model:   firstAggregatedModel,
+						Term:    savedCurrentTerm,
+						Process: 1,
+					}
+
+					cm.dlog("Second Process in SecureAverageComputation from %v to %v: args=%+v", cm.id, peerId, args)
+					var reply SecureAverageComputationReply
+					if err := cm.server.Call(peerId, "Federated.SecureAverageComputation", args, &reply); err != nil {
+						cm.dlog("SecureAverageComputation failed in %v: %v", peerId, err)
+						return
+					}
+					if cm.state != Leader {
+						cm.dlog("while waiting for reply, state = %v", cm.state)
+						return
+					}
+
+					if reply.Term != savedCurrentTerm {
+						cm.dlog("term out of date in SecureAverageComputation")
+						return
+					}
+
+					if reply.Success {
+						cm.mu.Lock()
+						cm.models = append(cm.models, reply.ClientModel)
+						secondSuccessCount++
+						cm.mu.Unlock()
+					}
+				}(peerId)
+			}
+			wg.Wait()
+
+			if secondSuccessCount == len(cm.peerIds)+1 {
+				result := ComputationResult{
+					Epoch: 0,
+				}
+
+				if len(cm.log) > 0 {
+					cm.mu.Lock()
+					result = cm.log[len(cm.log)-1].Command.(ComputationResult)
+					cm.mu.Unlock()
+					result.Epoch++
+				}
+
+				if !cm.Submit(result) {
+					cm.dlog("model submit failed in %v", cm.id)
+					return
+				}
+
+			}
+
+			cm.triggerAggregateChan <- struct{}{}
+		}
+	*/
 }
 
-func (cm *ConsensusModule) ReadAggregatedModel() ([]byte, error) {
+// ps_wtで和を取る 自分自身で実行
+func (cm *ConsensusModule) readFirstAggregatedModel() ([]byte, error) {
 	cm.mu.Lock()
-	models := map[string][]ModelParam{"models": cm.models}
+	models := map[string][][]byte{"models": cm.models}
 	jsonStr, err := json.Marshal(models)
 	if err != nil {
 		return nil, err
 	}
-
 	cm.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
+	ctx, cancel := context.WithTStartEpochArgsimeout(context.Background(), time.Second*20)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://0.0.0.0:9000/aggregate/%v", len(cm.peerIds)), bytes.NewBuffer(jsonStr))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://0.0.0.0:9000/first-aggregate", bytes.NewBuffer(jsonStr))
 	if err != nil {
 		return nil, err
 	}
@@ -932,17 +1086,15 @@ func (cm *ConsensusModule) ReadAggregatedModel() ([]byte, error) {
 		return nil, err
 	}
 
-	var u Upload
-	if err := json.Unmarshal(byteArray, &u); err != nil {
+	var mr ModelResponse
+	if err := json.Unmarshal(byteArray, &mr); err != nil {
 		return nil, err
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	cm.dlog("aggregated model accuracy: %v, loss: %v", u.Accuracy, u.Loss)
-
-	return u.Model, nil
+	return mr.Model, nil
 }
 
 // leaderSendAEs sends a round of AEs to all peers, collects their

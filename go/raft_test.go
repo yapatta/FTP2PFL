@@ -10,7 +10,34 @@ import (
 	"time"
 
 	"github.com/fortytw2/leaktest"
+	"github.com/yuziroppe/research_impl/first"
 )
+
+func TestMultiCluster(t *testing.T) {
+	var secondLayer []first.Harness
+	for i := 0; i < 3; i++ {
+		h := NewHarness(t, 3)
+		secondLayer = append(secondLayer, *h)
+	}
+
+	var superPeers []int
+	for i := 0; i < 3; i++ {
+		leaderId, _ := secondLayer[i].CheckSingleLeader()
+		if leaderId < 0 {
+			t.Errorf("no leader in cluster %d", i)
+		}
+		superPeers = append(superPeers, leaderId)
+	}
+
+	firstLayer = NewHarness(t, superPeers)
+
+	sleepMs(10_000)
+
+	firstLayer.Shutdown()
+	for i := 0; i < 3; i++ {
+		secondLayer[i].Shutdown()
+	}
+}
 
 func TestElectionBasic(t *testing.T) {
 	h := NewHarness(t, 3)
@@ -112,7 +139,16 @@ func TestElectionLeaderDisconnectThenReconnect5(t *testing.T) {
 
 	h.ReconnectPeer(origLeaderId)
 	sleepMs(150)
+	defer h.Shutdown()
 
+	// Submit a couple of values to a fully connected cluster.
+	sleepMs(SEC * 1000)
+	origLeaderId, _ := h.CheckSingleLeader()
+	dPeerId := (origLeaderId + 1) % N
+	h.DisconnectPeer(dPeerId)
+	sleepMs(SEC * 1000)
+	h.ReconnectPeer(dPeerId)
+	sleepMs(SEC * 1000)
 	againLeaderId, againTerm := h.CheckSingleLeader()
 
 	if newLeaderId != againLeaderId {

@@ -3,7 +3,7 @@
 //
 // Eli Bendersky [https://eli.thegreenplace.net]
 // This code is in the public domain.
-package raft
+package second
 
 import (
 	"fmt"
@@ -210,6 +210,14 @@ func (rpp *RPCProxy) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesR
 	return rpp.cm.AppendEntries(args, reply)
 }
 
-func (rpp *RPCProxy) ModelAggregation(args ModelAggregationArgs, reply *ModelAggregationReply) error {
-	return rpp.cm.ModelAggregation(args, reply)
+func (rpp *RPCProxy) SecureAverageComputation(args SecureAverageComputationArgs, reply *SecureAverageComputationReply) error {
+	return rpp.cm.SecureAverageComputation(args, reply)
+}
+
+func (rpp *RPCProxy) FirstAverageComputation(args SecureAverageComputationArgs, reply *SecureAverageComputationReply) error {
+	return rpp.cm.FirstAverageComputation(args, reply)
+}
+
+func (rpp *RPCProxy) StartEpoch(args StartEpochArgs, reply *StartEpochReply) error {
+	return rpp.cm.StartEpoch(args, reply)
 }

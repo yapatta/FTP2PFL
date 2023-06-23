@@ -2,7 +2,7 @@
 //
 // Eli Bendersky [https://eli.thegreenplace.net]
 // This code is in the public domain.
-package raft
+package first
 
 import (
 	"fmt"
@@ -56,6 +56,18 @@ type Harness struct {
 
 // NewHarness creates a new test Harness, initialized with n servers connected
 // to each other.
+
+// FIXME
+func NewHarnessSuperPeer(t *testing.T, peers []int) *Harness {
+	h := NewHarness(t, len(peers))
+	for i := 0; i < len(peers); i++ {
+		h.cluster[i].superPeerId = peers[i]
+		h.cluster[i].secondLayerId = i
+	}
+
+	return h
+}
+
 func NewHarness(t *testing.T, n int) *Harness {
 	ns := make([]*Server, n)
 	connected := make([]bool, n)
